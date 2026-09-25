@@ -1,0 +1,15 @@
+{
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "linkedProjects": ["./Cargo.toml"],
+        "cargo": { "features": "all" },
+        "check": {
+          "overrideCommand": ["just", "ra-check"],
+          "features": "all",
+          "workspace": false
+        }
+      }
+    }
+  }
+}

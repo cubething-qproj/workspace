@@ -1,0 +1,27 @@
+[submodule ".infra"]
+	path = .infra
+	url = https://github.com/cubething-qproj/infra
+[submodule "bin/quell"]
+	path = bin/quell
+	url = git@github.com:cubething-qproj/quell.git
+[submodule "bin/vn-jun-26"]
+	path = bin/vn-jun-26
+	url = https://github.com/cubething-qproj/vn-jun-26
+[submodule "lib/q_cam"]
+	path = lib/q_cam
+	url = git@github.com:cubething-qproj/q_cam.git
+[submodule "lib/q_proc"]
+	path = lib/q_proc
+	url = git@github.com:cubething-qproj/q_proc.git
+[submodule "lib/q_screens"]
+	path = lib/q_screens
+	url = git@github.com:cubething-qproj/q_screens.git
+[submodule "lib/q_shell"]
+	path = lib/q_shell
+	url = git@github.com:cubething-qproj/q_shell.git
+[submodule "lib/q_term"]
+	path = lib/q_term
+	url = git@github.com:cubething-qproj/q_term.git
+[submodule "lib/q_test_harness"]
+	path = lib/q_test_harness
+	url = git@github.com:cubething-qproj/q_test_harness.git

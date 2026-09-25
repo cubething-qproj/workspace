@@ -1,0 +1,28 @@
+[workspace]
+resolver="3"
+members=["bin/*", "lib/*"]
+
+
+[workspace.lints]
+rust.unexpected_cfgs = { level = "warn", check-cfg = ["cfg(bevy_lint)"] }
+clippy.too_many_arguments = "allow"
+clippy.type_complexity = "allow"
+clippy.nonstandard_macro_braces = "warn"
+
+[patch."https://github.com/cubething-qproj/q_proc"]
+q_proc = { path = "lib/q_proc" }
+
+[patch."https://github.com/cubething-qproj/q_screens"]
+q_screens = { path = "lib/q_screens" }
+
+[patch."https://github.com/cubething-qproj/q_shell"]
+q_shell = { path = "lib/q_shell" }
+
+[patch."https://github.com/cubething-qproj/q_term"]
+q_term = { path = "lib/q_term" }
+
+[patch."https://github.com/cubething-qproj/q_test_harness"]
+q_test_harness = { path = "lib/q_test_harness" }
+
+[patch."https://github.com/cubething-qproj/q_cam"]
+q_cam = {path = "lib/q_cam"}
