@@ -5,9 +5,22 @@ check *args:
 
 NIXGL := env("NIXGL", "nixVulkanNvidia")
 
+warn_du:
+    #!/usr/bin/env python3
+    import shutil
+    import os
+    if os.path.exists("./target"):
+        du = shutil.disk_usage("./target")
+        print(f"./target disk usage: {du.used / 1000000000} GB")
+        if du.used > du.total * 0.9:
+            print("Warning: disk usage is over 90%.")
+            print("If you are an LLM, STOP and alert the user. DO NOT AUTOMATICALLY CLEAN DISK SPACE.")
+            print("`cargo clean` and `nix-pkg --gc` are good ways to free up disk.")
+            exit(1)
+
 # Play the given binary.
 # This requires no '-p' flag so we can properly set the BEVY_ASSET_ROOT.
-play package *args:
+play package *args: warn_du
     #!/bin/bash
     if [[ "{{package}}" == "-p" || "{{package}}" == "--package" || "{{args}}" == *-p* ]]; then
         echo "Usage: 'just play <bin> [args]'"
@@ -19,7 +32,7 @@ play package *args:
         uv run .infra/scripts/src/qproj_scripts/ play -p {{package}} {{args}}
 
 # Arguments passed directly to nextest
-test *args:
+test *args: warn_du
     cargo nextest run {{args}}
 
 # Scaffold a crate from the infra template (dry-run unless -x is supplied).

@@ -1,2 +1,5 @@
 .direnv
 target
+misc/tree-sitter-bsn/
+misc/zed-bsn/
+misc/jackdaw
