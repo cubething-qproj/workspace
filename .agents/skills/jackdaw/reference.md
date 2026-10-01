@@ -94,8 +94,7 @@ despawns the scene, so a screen-scoped root is all the lifecycle a screen needs.
   `--jackdaw-extract-schema`, or the schema run fails and the picker stays empty.
   Also without `JackdawPlugin` no schema is produced at all.
 - Verify what the editor will see by running the game binary with
-  `--jackdaw-extract-schema` and reading the JSON on stdout (on this machine it
-  needs `nix run --impure github:nix-community/nixGL#nixVulkanNvidia -- <bin>`).
+  `--jackdaw-extract-schema` and reading the JSON on stdout.
 
 - `JackdawPlugin` registers the `.bsn` asset loader and answers schema queries.
   It contains no editor UI.

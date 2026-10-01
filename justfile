@@ -1,6 +1,6 @@
 # Run cargo clippy.
 check *args:
-    cargo clippy {{args}}
+    cargo clippy {{ args }}
 
 warn_du:
     #!/usr/bin/env python3
@@ -12,26 +12,24 @@ warn_du:
         if du.used > du.total * 0.9:
             print("Warning: disk usage is over 90%.")
             print("If you are an LLM, STOP and alert the user. DO NOT AUTOMATICALLY CLEAN DISK SPACE.")
-            print("`cargo clean` and `nix-pkg --gc` are good ways to free up disk.")
+            print("`cargo clean` is a good way to free up disk.")
             exit(1)
-
-throttle := "systemd-run --user --scope --quiet -p CPUWeight=20 -p IOWeight=20 -p MemoryHigh=20G =p MemorySwapMax=2G --"
 
 # Play the given binary.
 # This requires no '-p' flag so we can properly set the BEVY_ASSET_ROOT.
 play package *args: warn_du
     #!/bin/bash
-    if [[ "{{package}}" == "-p" || "{{package}}" == "--package" || "{{args}}" == *-p* ]]; then
+    if [[ "{{ package }}" == "-p" || "{{ package }}" == "--package" || "{{ args }}" == *-p* ]]; then
         echo "Usage: 'just play <bin> [args]'"
         echo "Use the first argument to specify the package."
         exit 1;
     fi
-    export BEVY_ASSET_ROOT=./bin/{{package}}
-    {{throttle}} uv run .infra/scripts/src/qproj_scripts/ play -p {{package}} {{args}}
+    export BEVY_ASSET_ROOT=./bin/{{ package }}
+    uv run .infra/scripts/src/qproj_scripts/ play -p {{ package }} {{ args }}
 
 # Arguments passed directly to nextest
 test *args: warn_du
-    {{throttle}} cargo nextest run {{args}}
+    cargo nextest run {{ args }}
 
 # Scaffold a crate from the infra template (dry-run unless -x is supplied).
 init path *args:
