@@ -50,10 +50,11 @@ Reference: `.agents/skills/jackdaw/` (skill) and `.docs/reference/jackdaw/`
 
 ### Toolchain
 
-There's no conflict with `bevy_lint`. The editor builds the game with the
-project's own toolchain, the floating nightly. `nightly-2026-03-05` applies
-only to the editor binary and in-process editor extensions.
-`jackdaw_runtime` uses no `#![feature]`.
+The org pins the same nightly as Jackdaw, `nightly-2026-03-05`, in
+`rust-toolchain.toml`. The editor builds the game with the project's own
+toolchain (it strips an inherited `RUSTUP_TOOLCHAIN`), so both use one
+compiler. Only the editor binary and in-process editor extensions require
+that nightly. `jackdaw_runtime` uses no `#![feature]`.
 
 ### Native (C/C++) dependencies
 

@@ -1,9 +1,6 @@
-# Run cargo clippy and bevy lint.
+# Run cargo clippy.
 check *args:
     cargo clippy {{args}}
-    bevy lint {{args}}
-
-NIXGL := env("NIXGL", "nixVulkanNvidia")
 
 warn_du:
     #!/usr/bin/env python3
@@ -18,6 +15,8 @@ warn_du:
             print("`cargo clean` and `nix-pkg --gc` are good ways to free up disk.")
             exit(1)
 
+throttle := "systemd-run --user --scope --quiet -p CPUWeight=20 -p IOWeight=20 -p MemoryHigh=20G =p MemorySwapMax=2G --"
+
 # Play the given binary.
 # This requires no '-p' flag so we can properly set the BEVY_ASSET_ROOT.
 play package *args: warn_du
@@ -28,12 +27,11 @@ play package *args: warn_du
         exit 1;
     fi
     export BEVY_ASSET_ROOT=./bin/{{package}}
-    nix run --impure github:nix-community/nixGL#{{ NIXGL }} -- \
-        uv run .infra/scripts/src/qproj_scripts/ play -p {{package}} {{args}}
+    {{throttle}} uv run .infra/scripts/src/qproj_scripts/ play -p {{package}} {{args}}
 
 # Arguments passed directly to nextest
 test *args: warn_du
-    cargo nextest run {{args}}
+    {{throttle}} cargo nextest run {{args}}
 
 # Scaffold a crate from the infra template (dry-run unless -x is supplied).
 init path *args:

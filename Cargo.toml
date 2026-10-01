@@ -8,7 +8,6 @@ exclude=["misc"]
 
 
 [workspace.lints]
-rust.unexpected_cfgs = { level = "warn", check-cfg = ["cfg(bevy_lint)"] }
 clippy.too_many_arguments = "allow"
 clippy.type_complexity = "allow"
 clippy.nonstandard_macro_braces = "warn"

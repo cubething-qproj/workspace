@@ -59,15 +59,20 @@ skill.
 
 ## Toolchain (important for this org)
 
-- Jackdaw pins `nightly-2026-03-05` (check the current pin in `jd doctor`). The
-  pin applies only to the **editor binary and editor extensions** (the
-  SDK/dylib path).
-- **Quell's game build uses our own toolchain**: the floating `nightly`, which
-  `bevy lint`'s driver is linked against. So there is no conflict with
-  `bevy_lint`.
-- **Never** add a `rust-toolchain.toml` pinning Jackdaw's nightly to Quell or the
-  org root, or override the org's toolchain for Jackdaw's sake. Either would
-  break `bevy lint`.
+- Jackdaw pins `nightly-2026-03-05` (`misc/jackdaw/rust-toolchain.toml` and
+  `jackdaw_env::RUSTUP_TOOLCHAIN`; `jd doctor` shows the installed pin). Only
+  the **editor binary and editor extensions** (the SDK/dylib path) require it.
+- **The org pins the same nightly on purpose**, in `rust-toolchain.toml`, so
+  our builds, the editor and the editor's game build all use one compiler.
+  When Jackdaw's pin moves, move ours in the same change. Don't bump ours
+  independently. The copies are:
+  - the infra project template (the source of truth: CI's nix flake reads it,
+    and the sync workflow copies it to the registered repos);
+  - the org root;
+  - `bin/vn-jun-26`, which isn't in the sync registry.
+- The editor builds the game with the **project's** toolchain. It strips an
+  inherited `RUSTUP_TOOLCHAIN` so the project's `rust-toolchain.toml` wins
+  (`jackdaw_project_build/src/binary.rs`).
 - The editor's game build is a second full build in `.jackdaw/target/game`
   (inside the repo, gitignored). The first one takes about 9 minutes. It's
   separate from the org workspace's `target/`, so expect the disk cost.
