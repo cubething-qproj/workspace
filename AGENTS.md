@@ -44,6 +44,8 @@ can play with the values as needed.
 
 ### Testing
 
+NEVER run `just play`. If you need to test a gameplay feature, ask me to do so.
+
 For Bevy tests with repeated setup, prefer a small test-local `Fixture` that
 owns a normal `App` and the relevant `Entity` IDs. Keep scenario-specific setup,
 actions, and assertions on the fixture so each test reads as a sequence of
