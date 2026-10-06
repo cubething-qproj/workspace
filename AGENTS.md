@@ -4,11 +4,11 @@ The first thing you should do is to read `AGENTS.local.md` if it exists.
 
 You are working in the cubething_qproj organization (aka qproj). Be aware of the following key repositories:
 
-| repo      | path            | description                               |
-| --------- | --------------- | ----------------------------------------- |
-| quell     | ./bin/quell     | Long-term game project.                   |
-| vn-jun-26 | ./bin/vn-jun-26 | Visual novel project, aka 'roach hell.'   |
-| infra     | .infra/         | Infrastructure.                           |
+| repo      | path            | description                             |
+| --------- | --------------- | --------------------------------------- |
+| quell     | ./bin/quell     | Long-term game project.                 |
+| vn-jun-26 | ./bin/vn-jun-26 | Visual novel project, aka 'roach hell.' |
+| infra     | misc/infra/     | Infrastructure.                         |
 
 There is also the `q_os` subproject, including crates `q_proc`, `q_shell`, and
 `q_term`. Utility crates include `q_screens` and `q_test_harness`.

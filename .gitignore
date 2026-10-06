@@ -1,5 +1,8 @@
 .direnv
 target
-misc/tree-sitter-bsn/
-misc/zed-bsn/
-misc/jackdaw
+misc/
+bin/
+lib/
+.infra
+.pytest_cache
+repos.yml

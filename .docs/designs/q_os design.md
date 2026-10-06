@@ -19,6 +19,14 @@ built in to Bevy and already acts as a hostfs. -- Perhaps we’re building
 something like an ECS-backed microkernel and a native textual interface to that
 system?
 
+-- Regarding a filesystem as an interface: perhaps it's like the Newtonian /
+quantum distinction. Newtonian physics is a very good approximation of quantum
+phenomenon that only breaks at very large or small distances / speeds.
+Similarly, a filesystem is a familiar interface and an approximation for the
+underlying ECS model. The ECS is the particle physics, the filesystem is the
+familiar Newtonian mechanics. Additional benefits: direct interface with the
+host system's filesystem for asset management.
+
 ## Why
 
 I want a familiar way to bundle activities on top of an ECS, to

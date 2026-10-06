@@ -120,7 +120,7 @@ skill.
 - For exact geometry (ramps at precise angles, aligned grids), generate
   plane-only brushes and send them with `jackdaw/apply_bsn`; the editor derives
   topology and meshes, and `scene.save` writes the file. Don't hand-edit brush
-  topology in `.bsn`. Worked example: `.infra/scripts/greybox_stage.py`
+  topology in `.bsn`. Worked example: `misc/infra/scripts/greybox_stage.py`
   (greybox stage generator; its output is Quell's
   `assets/scenes/greybox_scene.bsn`).
 - **Don't verify game behavior by driving Play and screenshotting.** Ask the

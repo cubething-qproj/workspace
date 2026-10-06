@@ -55,7 +55,7 @@ From the target project root:
 
 5. Confirm the source is actually 0.19. For git dependencies, compare the pinned revision to Bevy tags rather than trusting a manifest version string.
 
-6. In qproj, the org-wide target Bevy version lives in `.infra/.bevy-version` (e.g. `0.19`). `init` substitutes it as `{{bevy_version}}` into new crates' `Cargo.toml` and `deny.toml`. Bump it to `0.20` as part of the upgrade, and never hardcode a Bevy version in the project template.
+6. In qproj, the org-wide target Bevy version lives in `misc/infra/.bevy-version` (e.g. `0.19`). `init` substitutes it as `{{bevy_version}}` into new crates' `Cargo.toml` and `deny.toml`. Bump it to `0.20` as part of the upgrade, and never hardcode a Bevy version in the project template.
 
 If dependencies mix Bevy generations, stop and explain the graph before editing. A type from Bevy 0.19 is not interchangeable with the same-named type from 0.20.
 

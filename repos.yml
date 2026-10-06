@@ -1,0 +1,27 @@
+- bin:
+    - name: quell
+      repo: git@github.com:cubething-qproj/quell.git
+    - name: vn-jun-26
+      repo: git@github.com:cubething-qproj/vn-jun-26.git
+- lib:
+    - name: q_cam
+      repo: git@github.com:cubething-qproj/q_cam.git
+    - name: q_proc
+      repo: git@github.com:cubething-qproj/q_proc.git
+    - name: q_screens
+      repo: git@github.com:cubething-qproj/q_screens.git
+    - name: q_shell
+      repo: git@github.com:cubething-qproj/q_shell.git
+    - name: q_term
+      repo: git@github.com:cubething-qproj/q_term.git
+    - name: q_test_harness
+      repo: git@github.com:cubething-qproj/q_test_harness.git
+- misc:
+    - name: jackdaw
+      repo: ~/repos/ada-x64/jackdaw
+    - name: tree-sitter-bsn
+      repo: git@github.com:cubething-qproj/tree-sitter-bsn.git
+    - name: zed-bsn
+      repo: git@github.com:cubething-qproj/zed-bsn.git
+    - name: infra
+      repo: git@github.com:cubething-qproj/infra.git

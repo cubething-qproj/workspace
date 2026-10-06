@@ -507,7 +507,7 @@ curl -s -X POST http://127.0.0.1:15703 -H content-type:application/json \
 ## 12. Authoring by script
 
 For geometry that needs exact numbers, build plane-only brushes and send them to
-the running editor. Worked example: `.infra/scripts/greybox_stage.py`, which
+the running editor. Worked example: `misc/infra/scripts/greybox_stage.py`, which
 built Quell's `assets/scenes/greybox_scene.bsn`.
 
 - **Minimal `apply_bsn` source** (one entity, no hierarchy wrapper):
