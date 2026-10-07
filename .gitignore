@@ -1,8 +1,4 @@
 .direnv
 target
-misc/
-bin/
-lib/
-.infra
 .pytest_cache
 repos.yml

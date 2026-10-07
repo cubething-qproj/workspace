@@ -6117,6 +6117,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "q_query_lang"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "tiny_bail",
+]
+
+[[package]]
 name = "q_screens"
 version = "0.2.0"
 dependencies = [

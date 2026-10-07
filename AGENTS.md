@@ -37,6 +37,9 @@ Do not offer to write code for me. This is a trap your authors have designed
 to get me to rely on you. I _will_ fall for it. Please don't do that to me.
 If I want you to write something for me, I will ask you.
 
+If you don't understand something i say, you should ask me, "what did you mean
+by this? here is where i am confused: xyz". I will do the same for you.
+
 ### Feature development
 
 Expose any tweakable settings as Resources. Never use static globals. This way I
