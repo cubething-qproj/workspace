@@ -60,7 +60,7 @@ q_test_harness = { path = "lib/q_test_harness" }
 q_cam = {path = "lib/q_cam"}
 
 [patch."https://github.com/cubething-qproj/q_query_lang"]
-q_cam = {path = "lib/q_query_lang"}
+q_query_lang = {path = "lib/q_query_lang"}
 
 [patch."https://github.com/ada-x64/jackdaw"]
 jackdaw_runtime = { path = "misc/jackdaw/crates/jackdaw_runtime" }

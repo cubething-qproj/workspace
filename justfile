@@ -4,12 +4,16 @@ check *args:
 
 warn_du:
     #!/usr/bin/env python3
-    import shutil
+    import subprocess
     import os
     if os.path.exists("./target"):
-        du = shutil.disk_usage("./target")
-        print(f"./target disk usage: {du.used / 1000000000} GB")
-        if du.used > du.total * 0.9:
+        du=subprocess.run(['du', './target', '-s'], capture_output=True, text=True)
+        gb = int(du.stdout.split('\t')[0]) / (1024 * 1024)
+        print(f"du ./target => {gb:0.2f} GB")
+        df=subprocess.run(['df', './target', '--output=pcent'], capture_output=True, text=True)
+        free_pct = df.stdout.split('\n')[1].strip()[:-1]
+        print(f"df ./target => {free_pct}%")
+        if int(free_pct) > 90:
             print("Warning: disk usage is over 90%.")
             print("If you are an LLM, STOP and alert the user. DO NOT AUTOMATICALLY CLEAN DISK SPACE.")
             print("`cargo clean` is a good way to free up disk.")

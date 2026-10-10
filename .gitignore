@@ -2,3 +2,6 @@
 target
 .pytest_cache
 repos.yml
+.claude
+tmp/
+.agents/sessions
