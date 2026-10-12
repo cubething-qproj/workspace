@@ -12,6 +12,9 @@ You are working in the cubething_qproj organization (aka qproj). Be aware of the
 
 There is also the `q_os` subproject, including crates `q_proc`, `q_shell`, and
 `q_term`. Utility crates include `q_screens` and `q_test_harness`.
+See the `q-os` skill for the ecosystem map. When adding, removing, or renaming
+a crate in `lib/`, update `.agents/skills/q-os/SKILL.md` and add the crate's
+own skill (see that file's maintenance note).
 
 DO NOT USE /tmp/ FOR BUILDS EVER!!! YOU WILL EAT UP ALL MY SWAP.
 ONLY EVER BUILD THINGS IN THIS DIRECTORY, TARGETING THE LOCAL TARGET DIR.

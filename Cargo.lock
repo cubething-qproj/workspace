@@ -1046,6 +1046,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_editor_cam"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e209471fac50f5a787f23eb01e1d27b733ebe953cb4d35d4209a8bd74ade62b"
+dependencies = [
+ "bevy_app",
+ "bevy_camera",
+ "bevy_color",
+ "bevy_derive",
+ "bevy_ecs",
+ "bevy_image",
+ "bevy_input",
+ "bevy_log",
+ "bevy_math",
+ "bevy_picking",
+ "bevy_platform",
+ "bevy_reflect",
+ "bevy_render",
+ "bevy_time",
+ "bevy_transform",
+ "bevy_window",
+]
+
+[[package]]
 name = "bevy_egui"
 version = "0.40.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6223,6 +6247,7 @@ dependencies = [
  "bevy",
  "bevy-inspector-egui",
  "bevy_asset_loader",
+ "bevy_editor_cam",
  "bevy_enhanced_input",
  "bitflags 2.13.2",
  "built",
