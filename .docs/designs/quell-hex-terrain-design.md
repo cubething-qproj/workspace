@@ -1,7 +1,8 @@
 # Quell hex terrain: terrain-first trail generation
 
-Status: **Draft proposal, round 8, 2026-10-11. Trialling loops that rejoin
-trails (§6); may be reverted.**
+Status: **Round 9, 2026-10-12. Being ported to Rust on `feat/hex-paths`.
+Nodes are now typed at placement, not after trails (see "Rust port changes").
+Trialling loops that rejoin trails (§6); may be reverted.**
 
 Replaces the generators in `quell-hex-paths-prototype-design.md` (backbone +
 budget, growing tree). The prototype work continues on `feat/hex-paths` with
@@ -16,11 +17,49 @@ print the per-seed checks quoted below, with:
 cd misc/hex-lab && uv run python -m hexlab.terrain ../../.docs/designs/quell-hex-terrain
 ```
 
+## Rust port changes (round 9)
+
+The Rust port (`bin/quell/src/screen/dev/hex_paths/`) follows this document
+except where listed here. Figures and statistics below still come from the
+Python prototype and show the round-8 rules.
+
+- **Typed placement.** POIs and benches are placed by type, so each score
+  decides what it is for:
+  - `nodes` is replaced by **`pois`** (6) and **`benches`** (3);
+  - POIs are placed first, by suitability ^ `spread` (§3);
+  - benches are placed next, by bench score, spaced from spawn and every POI.
+- **Trails enforce the bench rules, best effort.** Benches are fixed before
+  trails exist, so trail generation tries to keep them pass-through:
+  - loop closure always tries to give a bench spur a second way out;
+  - spanner routes avoid going straight from one bench to another.
+
+  Breaks are counted in the statistics rather than fixed by retyping.
+- **Typing after trails** shrinks to dealing the deck: key, NPC and Fear go to
+  random POIs, and the other POIs are empty.
+- **Bench score** (§7):
+  - quiet and overlook are ranked among **playable tiles only**. The prototype
+    ranked the margin too, and the margin has no views, so it crowded quiet
+    into roughly 0–0.4;
+  - each rank is raised to `bench_sharpness` (4) before blending, so only the
+    most enclosed spots and the best overlooks score well.
+- **Default board** is 20 × 20.
+- **Viewer.** The board is a 3D vertex-coloured mesh with an orbit camera
+  (right-drag to orbit, wheel to zoom), and its viewport sits beside the panel.
+  - Views: heightmap; cost (red); suitability (blue); bench score (blue for
+    quiet through green for overlook, on paper).
+  - Spawn and nodes are camera-facing billboards. "Reveal nodes" shows their
+    types.
+  - Clicking a billboard focuses the camera on it. The panel switches focus
+    back to the terrain, or to the player.
+- **Open:** with typed placement, a tease target should be a POI (the reward
+  at the end of the long way round). Pairs would be picked with a POI target
+  and any node as viewer.
+
 ## Terms
 
 | Term | Meaning |
 | --- | --- |
-| **Node** | A place on the board. Untyped until the trails exist, then a POI or a bench. |
+| **Node** | A place on the board: a POI or a bench. (Round 8: untyped until the trails exist. Round 9: typed at placement.) |
 | **POI** | Point of interest. The deck guarantees one each of **key**, **NPC** and **Fear**. Every other POI is **empty** (undefined for now; later perhaps holy places, abandoned zones, …). |
 | **Bench** | Rest and view stop along the way. Inventory management and similar activities happen here. |
 | **Spawn** | Where the player starts. Not a node. |
@@ -298,9 +337,9 @@ smoothing doesn't change which ways exist.
 | `relief` | 6 | Total height range, in edge lengths. |
 | `roughness` | 0.5 | Small-scale bumpiness (amplitude falloff per octave). |
 | `ridges` | 0.3 | Rolling hills → sharp ridgelines. |
-| `nodes` | 9 | Nodes to place (typed later). |
+| `nodes` | 9 | Nodes to place (typed later). Round 9: replaced by `pois` (6) and `benches` (3). |
 | `spread` | 1 | 0 = even spacing; higher = sites follow good ground. |
-| `view` | 0.7 | Which trail nodes become benches: 0 = quiet, 1 = overlook. |
+| `view` | 0.7 | Which trail nodes become benches: 0 = quiet, 1 = overlook. Round 9: where benches are placed. |
 | `teases` | 2 | Number of tease pairs. |
 | `tease_height` | 2–4 | Escarpment drop, drawn from this range per tease. |
 | `tease_detour` | 3 | Minimum walk ÷ crow-fly for a tease. |

@@ -254,3 +254,38 @@ Scan existing issues and PRs first, then push and open the PR.
 4. **Movement:** corner to corner along honeycomb edges. The prototype won't
    follow smoothed trails. Later work reshapes the heightmap, adds trail
    materials and puts a player controller on top.
+
+## Progress and changes (2026-10-12)
+
+Done:
+1. **Strip** (`67dad3c`).
+2. **Heightmap and 3D view** (`803d94f`). The camera is a bevy_editor_cam
+   orbit camera (right-drag, wheel zoom, no pan), not the static tilt camera
+   planned here.
+3. **Step costs and the cost view** (`f76fd2a`). Route search moved to the
+   step that first uses it.
+4. **Lifecycle refactor** (`78935c8`), then **node sites** (`36baf46`).
+   Follow-ups (sliders, typed placement, bench score fixes, reveal toggle,
+   click-to-focus) are committed separately.
+
+Changes to later steps, from typed placement (design doc, "Rust port
+changes"):
+- **Step 5 (teases):** pick pairs with a POI target.
+- **Step 6 (trails):** best-effort bench rules. Bench spurs always get a loop
+  attempt; spanner routes avoid going bench to bench. Breaks are counted.
+- **Step 7:** typing becomes dealing the deck to POIs, plus smoothing.
+
+The cross-cutting source layout cleanup waits for after this PR
+(`.docs/handoffs/quell-src-layout-handoff.md`).
+
+## Re-plan needed (2026-10-13)
+
+Steps 5 onward are superseded by round 11
+(`.docs/designs/quell-hex-terrain-r11-design.md`):
+- regional erosion terrain with a ranked window;
+- creeks on the dual lattice, with crossing nodes;
+- metre units and pace;
+- layout as a pure function of pins (regeneration);
+- no escarpment raising or route noise.
+
+Re-plan the remaining Rust steps from that document before continuing.
