@@ -54,7 +54,7 @@ by this? here is where i am confused: xyz". I will do the same for you.
 When creating new types, keep the semantics close to the owning type. Prefer
 trait impls and associated functions over free functions where possible.
 
-### File organization
+### File organization and Documentation
 
 Please place type definitions and their implementations at the _top_ of the
 file, with free functions below them. Bootstrapping is good because it prevents
@@ -69,15 +69,26 @@ If you are going to include any of these things in a file, then do so in this or
 # prelude with pub exports
 # type definitions and associated functions sorted by order of appearance
   # consts
-  # types with no impls
-  # types with impls
+  # resources
+    # resources with no impls
+    # resources with impls
+  # components
+    # components with no impls
+    # components with impls
+  # raw types
+    # types with no impls
+    # types with impls
 # free functions
 # plugin definition
 # unit tests
 ```
 
-Ensure that every public-facing function is documented. Ideally, _every_ function
-with a non-obvious implementation has a doc comment expressing the intent.
+Ensure that every public-facing function is documented. Ideally, _every_
+function with a non-obvious implementation has a doc comment expressing the
+intent. Type-level doc comments should explain the typical context for their
+usage and link to other types when they are related. Module-level docs should
+provide a brief summary of data pipelines and type relationships. Doc comments
+are essentially a wiki. Use them as such.
 
 For Bevy crates (which this entire project is), separate components from systems.
 Follow this project structure. See /bin/quell/docs/architecture.md for more detail.
@@ -109,6 +120,15 @@ Follow this project structure. See /bin/quell/docs/architecture.md for more deta
     |- my_prog/
       |- mod.rs       # exports and plugin
       |- prog.rs      # program definition
+```
+
+`data` may be split into a module. If so, use `plugin.rs` to define a plugin for all registration concerns for the module. Otherwise register all data in the parent's `mod.rs`
+
+```tree
+|- data/
+  |- mod.rs
+  |- plugin.rs      # Register anything necessary here
+  |- big_struct.rs  # Use individual modules for large structs and their impls
 ```
 
 ### Feature development

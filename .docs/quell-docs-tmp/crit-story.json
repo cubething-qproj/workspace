@@ -1,0 +1,160 @@
+{
+  "prologue": {
+    "title": "Terrain first, trails that can change",
+    "overview": "This branch builds a 3D hex-path laboratory and ports the round-11 open-ground generator: erosion shapes a region, a ranked window supplies immutable terrain, and a separate layout creates nodes and creek-constrained trails. Regeneration reruns that layout with pins, preserving terrain and crossing landmarks. Staged edits are the first implementation; inline Review delta notes identify the unstaged adjustments against that baseline.",
+    "key_changes": [
+      "Region \u2192 Terrain \u2192 Layout \u2192 Board separates physical ground, mutable arrangements, and Bevy presentation.",
+      "Uplift, priority flood, drainage accumulation, erosion, and creep replace noise hills.",
+      "Window ranking uses traced creeks, main-creek fords, natural views, relief, and river penalties.",
+      "Typed nodes, Dijkstra routing, tease retries, biconnected loop checks, banks, and ports build the network.",
+      "Partial regeneration and Fear preserve different pins; node IDs and cards survive regeneration.",
+      "Unstaged review repairs focus, marker semantics, and camera scale invalidation, and removes route history.",
+      "Read the review-level teaching notes for the complete algorithm walkthrough; the chapters group the actual code by concern."
+    ],
+    "risks": [
+      "Generation runs synchronously; one cached region avoids repeat erosion for a matching key.",
+      "Spacing, displacement, and loop creation have fallbacks or guarded attempts; output counts and held teases can vary.",
+      "Outer-margin creek links may lack a shared side; the unstaged change documents that existing limitation.",
+      "Walking, woodland sight density, and actual trail smoothing remain outside this pass.",
+      "Small seeded and selected-schedule tests cover specific properties; no fresh test run was performed while authoring this story."
+    ],
+    "diagram": "flowchart TD\n S[Seed and erosion settings] --> R[Region: metres, receivers, drainage]\n R --> W[Rank windows and trace creeks]\n W --> T[Terrain: immutable ground and site scores]\n T --> L[Layout: nodes, levelled copy, trails]\n P[Pins and next layout seed] --> L\n L --> B[Board resource and measurements]\n B --> V[Surface, billboards, overlays and camera]\n L --> P"
+  },
+  "chapters": [
+    {
+      "id": "ch1",
+      "title": "The laboratory and its Bevy boundary",
+      "summary": "Resources hold settings and results; screen systems turn a generated Board into an orbitable preview, while the panel offers terrain replacement, fresh layouts, partial regeneration, and Fear.",
+      "hunk_refs": [
+        {
+          "file_path": "Cargo.toml",
+          "old_start": 14
+        },
+        {
+          "file_path": "Cargo.toml",
+          "old_start": 22
+        },
+        {
+          "file_path": "Cargo.toml",
+          "old_start": 46
+        },
+        {
+          "file_path": "src/screen/dev/hex_paths/data.rs",
+          "old_start": 0
+        },
+        {
+          "file_path": "src/screen/dev/hex_paths/mod.rs",
+          "old_start": 0
+        },
+        {
+          "file_path": "src/screen/dev/hex_paths/panel.rs",
+          "old_start": 0
+        },
+        {
+          "file_path": "src/screen/dev/hex_paths/screen.rs",
+          "old_start": 0
+        },
+        {
+          "file_path": "src/screen/dev/hex_paths/systems.rs",
+          "old_start": 0
+        },
+        {
+          "file_path": "src/screen/dev/mod.rs",
+          "old_start": 1
+        }
+      ],
+      "diagram": ""
+    },
+    {
+      "id": "ch2",
+      "title": "Water carves the regional landscape",
+      "summary": "Repeated uplift, priority flood, steepest descent, accumulated drainage, stream-power cuts, and creep produce a large region whose outlets lie on every boundary.",
+      "hunk_refs": [
+        {
+          "file_path": "src/screen/dev/hex_paths/terrain/erosion.rs",
+          "old_start": 0
+        },
+        {
+          "file_path": "src/screen/dev/hex_paths/terrain/height.rs",
+          "old_start": 0
+        }
+      ],
+      "diagram": ""
+    },
+    {
+      "id": "ch3",
+      "title": "A playable window and two lattices",
+      "summary": "Candidate ranking selects a useful landscape; shared corners carry trails, centre-to-centre creeks close the sides they cross, and a finer raster supplies immutable board heights.",
+      "hunk_refs": [
+        {
+          "file_path": "src/screen/dev/hex_paths/terrain/window.rs",
+          "old_start": 0
+        },
+        {
+          "file_path": "src/screen/dev/hex_paths/terrain/mesh.rs",
+          "old_start": 0
+        },
+        {
+          "file_path": "src/screen/dev/hex_paths/terrain/mod.rs",
+          "old_start": 0
+        }
+      ],
+      "diagram": ""
+    },
+    {
+      "id": "ch4",
+      "title": "Landmarks, tease pairs, and pinned identity",
+      "summary": "Suitability and ranked views guide typed placement; the same seeded layout pipeline learns walking order, replaces broken tease pairs, and regenerates around preserved node identities and trails.",
+      "hunk_refs": [
+        {
+          "file_path": "src/screen/dev/hex_paths/terrain/sites.rs",
+          "old_start": 0
+        },
+        {
+          "file_path": "src/screen/dev/hex_paths/layout/mod.rs",
+          "old_start": 0
+        }
+      ],
+      "diagram": ""
+    },
+    {
+      "id": "ch5",
+      "title": "Routes, crossings, independent loops",
+      "summary": "Dijkstra and a greedy spanner build trails under the tease guard; union-find selects useful crossings, biconnected blocks distinguish real alternate routes, and bank and port passes repair missing connections.",
+      "hunk_refs": [
+        {
+          "file_path": "src/screen/dev/hex_paths/layout/crossings.rs",
+          "old_start": 0
+        },
+        {
+          "file_path": "src/screen/dev/hex_paths/layout/network.rs",
+          "old_start": 0
+        }
+      ],
+      "diagram": ""
+    },
+    {
+      "id": "ch6",
+      "title": "What the headless fixture exercises",
+      "summary": "Selected schedule stepping checks board replacement and direct unload behaviour; the unstaged fixture adds the view resource required by the new focus repair.",
+      "hunk_refs": [
+        {
+          "file_path": "src/screen/dev/hex_paths/test.rs",
+          "old_start": 0
+        }
+      ],
+      "diagram": ""
+    }
+  ],
+  "support": [
+    {
+      "hunk_refs": [
+        {
+          "file_path": ".gitignore",
+          "old_start": 2
+        }
+      ],
+      "reason": "Ignore editor backup files."
+    }
+  ]
+}

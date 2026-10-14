@@ -1,3 +1,5 @@
+SCRIPTS_DIR := justfile_dir() + "/misc/infra/scripts/src/qproj_scripts"
+
 # Run cargo clippy.
 check *args:
     cargo clippy {{ args }}
@@ -29,7 +31,7 @@ play package *args: warn_du
         exit 1;
     fi
     export BEVY_ASSET_ROOT=./bin/{{ package }}
-    uv run misc/infra/scripts/src/qproj_scripts/ play -p {{ package }} {{ args }}
+    uv run {{ SCRIPTS_DIR }} play -p {{ package }} {{ args }}
 
 # Arguments passed directly to nextest
 test *args: warn_du
@@ -39,7 +41,7 @@ test *args: warn_du
 init path *args:
     #!/usr/bin/env bash
     read -r -a options <<< {{ quote(args) }}
-    uv run misc/infra/scripts/src/qproj_scripts/ init {{ quote(file_name(path)) }} \
+    uv run {{ SCRIPTS_DIR }} init {{ quote(file_name(path)) }} \
         --{{ quote(file_name(parent_directory(path))) }} \
         --dest {{ quote(path) }} \
         --bevy-version {{ quote(trim(read("misc/infra/.bevy-version"))) }} \
@@ -102,3 +104,12 @@ setup:
         for rel in failures:
             print(f"  {rel}")
         sys.exit(1)
+
+doc *ARGS: warn_du
+    #!/bin/bash
+    RUSTDOCFLAGS="--html-after-content {{ justfile_directory() }}/docs-rs/trait-tags.html" \
+    cargo doc {{ ARGS }} --all-features --no-deps --document-private-items
+    caddy file-server -r ./target/doc -b -l localhost:1234
+
+stage:
+    git add -A -- . ':!bin' ':!lib' ':!misc'

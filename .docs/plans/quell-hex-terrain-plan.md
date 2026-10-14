@@ -289,3 +289,100 @@ Steps 5 onward are superseded by round 11
 - no escarpment raising or route noise.
 
 Re-plan the remaining Rust steps from that document before continuing.
+
+## Migration plan: round 11 (2026-10-14)
+
+Replaces steps 5–9 above. The designer asked for **one step**: one
+implementation pass on `feat/hex-paths`, reviewed by Opus until the major
+concerns are covered, then left for manual review. It isn't committed until
+approved.
+
+**Reference:** hex-lab at `exp/15-density`, arm `trunk-sight`: open ground,
+sight in metres. Woodland density isn't ported; the designer dropped that
+line for now.
+
+### Keep (UX)
+
+- The orbit camera, focus by click, viewport beside the panel, billboards,
+  the panel of sliders, the Reveal toggle, and the views (Heightmap, Cost,
+  Suitability, Bench score).
+- `screen.rs` lifecycle and the `spawn_board` → `Board` resource flow.
+
+### Replace
+
+- **Noise heightmap → regional erosion and a ranked window.** This replaces
+  `height.rs`'s noise.
+  - `terrain/erosion.rs`: the region simulation (priority flood, D8 routing,
+    flow accumulation, stream power, creep, uplift against outlets on every
+    side).
+  - `terrain/window.rs`: candidate windows, creek tracing with gap fill,
+    window features (main-creek fords, natural teases, river and relief), and
+    a bicubic crop into the board raster.
+  - The simulated region is cached in a resource keyed by its settings and
+    seed, so layout-only changes don't re-simulate.
+- **Node placement → the layout layer.** A new pure module `layout/`, beside
+  `terrain/`:
+  - `layout/mod.rs`: `Layout`, `Node` (id, tile, kind, card), `Pins`, and
+    `layout(ground, settings, seed, pins)` with the two-pass walking order
+    and tease disqualification (retry).
+  - `layout/crossings.rs`: creek sides, corner parts (union-find), trunk
+    sites, banks, dropping dead crossings, `cut_off`, and joining banks.
+  - `layout/network.rs`: Dijkstra over corners, routes, `alongside`, the
+    trail network, detour and walked-from-spawn, broken teases and the `lay`
+    guard, the spanner and connection pass, `on_loop` (biconnected
+    components), and close loops with REJOIN, ports, `level` and pace.
+- **Settings:**
+  - `HexPathsSettings`: the noise knobs give way to erosion knobs in metres
+    (uplift, channel and creek areas) and layout knobs (crossings, teases,
+    water boost).
+  - `HexTerrainTuning` gains the round-11 constants, with their Python
+    values.
+  - `HexPathsView` gains the regeneration count.
+- **Units:** heights stay in edge lengths inside the generator, and the
+  knobs are in metres (33 m edges). The display gets a vertical exaggeration
+  in `HexPathsAppearance`: true scale is about 25 m of relief over 1 km,
+  which reads as flat. Height colours become absolute (top at 120 m), as in
+  the figures.
+
+### Add (UX)
+
+- **Drawing:** trails (gizmos on honeycomb edges, coloured by kind), creeks
+  (tile centre to downstream), crossing pads (a blue hex outline), and,
+  under Reveal, tease lines (red if held, grey if not).
+- **Billboards:** revealed POIs show their card (key, npc, fear, empty). The
+  player billboard stands on spawn after a regeneration.
+- **Panel buttons:**
+  - **New layout:** the next layout seed on the same terrain.
+  - **Regenerate here:** partial regeneration around the focused node or the
+    player.
+  - **Fear here:** a Fear at the focused node or the player.
+
+  Both regeneration buttons refuse on a crossing, with a message.
+- **Stats text:** seed, layout count, walk-all and farthest minutes,
+  crossings, teases held of placed, and errors.
+
+### Risks
+
+- **Size.** About 2000 lines of new Rust in one step. That's mitigated by
+  following the Python names and order function by function.
+- **Generation time.** Region simulation at `opt-level = 1` is about 1–2 s
+  per terrain change. It's cached, so layout changes are fast. If it's too
+  slow, move it to `AsyncComputeTaskPool` as a follow-up.
+- **No seed parity with Python.** The RNG, bicubic sampling and float order
+  all differ. Validation is by properties and by eye.
+- **`on_loop`:** "two node-disjoint ways" equals sharing a biconnected block
+  with another pad. A wrong reduction would bring back fake loops.
+- **Regeneration UX without movement.** The "player" is wherever
+  regeneration last happened; walking stays step 9 of the old plan, not
+  part of this pass.
+
+### Tests
+
+Properties, not exact layouts. Small regions keep debug tests fast:
+- flood leaves no pits, and every cell drains to an outlet;
+- traced creek links join neighbouring tiles;
+- crossings lie on creek tiles and lead to two nodes;
+- the trail network connects every node;
+- regeneration keeps crossings and the deck, refuses on a crossing, and
+  leaves no dead ends;
+- the existing fixture tests (invalid settings, unload) keep passing.

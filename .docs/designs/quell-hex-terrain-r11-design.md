@@ -15,7 +15,8 @@ Code: `misc/hex-lab/src/hexlab/` (`terrain.py`, `erosion.py`, `layout.py`).
 Every experiment is a tagged hex-lab commit (`exp/NN-name`), with a summary in
 `misc/hex-lab/experiments/` and figures in
 `.docs/designs/quell-hex-terrain/experiments/NN-name/`. The current algorithm
-is the arm `creeks2-trunk` at tag `exp/12-crossings`.
+is the arm `creeks2-trunk` at tag `exp/12-crossings`, with the fixes in §7
+(exps 13–14, arm `trunk-sight`). §8 is woodland, the next open problem.
 
 ## Goals (unchanged)
 
@@ -179,6 +180,76 @@ moves and the trails regenerate.
 **Seeds:** the terrain seed gives the region, the window and the first layout.
 Each regeneration uses (seed, count). Exps 04, 11, 12.
 
+## 7. Fixes after round 11 (exps 13–14)
+
+From a robustness audit of exps 10–12:
+- **Fords and crossings are on the main creek only.**
+  - Window ranking traces creeks with the same function as the board, so
+    ford sites are on the drawn creek.
+  - Before, 69% of fords sat one hex off it.
+- **A crossing must lead to two other nodes:** at least two banks lead to
+  nodes, and to two different ones. Otherwise it's invalid and dropped.
+- **Nodes never go where trails can't reach them.**
+- **Bank trails can't go round the crossing pad.**
+- **No regeneration while standing on a crossing.**
+- **Breaking a tease disqualifies it.** If a route has to break a tease, the
+  layout is redone without it, and another pair takes its place. No route
+  breaks a tease now; open-ground boards hold 2.0 teases, up from 1.33.
+- **Sight in metres:**
+  - eye 1.5 m;
+  - landmark 4 m;
+  - a full overlook is a 12 m drop;
+  - tease ranking stops rewarding drops beyond 24 m.
+
+  These were edge lengths before: eye 16.5 m, landmark 49.5 m.
+
+## 8. Woodland: oak–hickory forest
+
+The board is **oak–hickory forest**, the deciduous forest of the eastern
+Great Plains' edge, so sight lines run through and over trees. Wikipedia
+gives the species but no structure:
+- overstory: red, black, white and chestnut oak, and pignut, bitternut and
+  shagbark hickory;
+- understory: dogwood and hawthorn.
+
+**Working assumptions** (no stats; adjust by feel):
+- **Canopy:** about 15–20 m on uplands, lower on dry ridges and the western
+  edge of the range. Exp 14 uses 15 m.
+- **Understory:** historically fairly open, kept so by fire; now denser where
+  fire has been suppressed (redcedar, shrubs). You see some way between
+  trunks, perhaps 30–100 m depending on the understory.
+- **Season:** leaf-off (about November to April) opens views a lot. This is
+  a candidate knob if seasons ever matter.
+- **Openings:** creek corridors, ridgetop prairie remnants, and old clearings
+  (homesteads, fields).
+
+**Exp 14 result:** with a solid 15 m canopy over 16–26 m of relief, no
+tease is visible: all 58 node pairs within sight range on seeds 2, 3 and 7
+are hidden. Window ranking finds no natural tease spots.
+
+**Sight model** (exp 15). The forest's look in the game is unknown, so the
+generator models only how far you can see:
+- every sight line has a budget equal to the longest view (6 hexes, about
+  340 m);
+- each metre costs 1, plus `density` if it's wooded;
+- clearings (within one edge of either end) and creeks (within 8 m of the
+  creek line) cost no extra;
+- visible means the ground doesn't block the line and the cost is within the
+  budget.
+
+`density` is the knob to play with. Fully wooded, a line reaches about
+170 m at density 1, 85 m at 3, and 43 m at 7. Teases mostly survive at 1
+and almost never at 3 or more. None of this changes how the game draws the
+world: there's no fog.
+
+**Teases in woodland** (direction, not yet tried):
+- **Cut vistas:** a cleared sight line from the viewer, made in the model
+  layer like pad levelling, never in the heightmap.
+- **Creek corridors** as open views: teases along or across the creek, where
+  the trees open up.
+- **Landmarks above the canopy,** for key locations only: old houses and holy
+  places.
+
 ## Knobs
 
 | Knob | Default | Meaning |
@@ -234,3 +305,5 @@ Re-plan `.docs/plans/quell-hex-terrain-plan.md` from here.
    a Fear reshuffles fully".
 5. **Very long teases across a creek** (×17 on exp 12, seed 3): fine, or should
    they be capped?
+6. **Woodland teases** (§8): try vistas and creek corridors, with tall
+   landmarks for key locations.

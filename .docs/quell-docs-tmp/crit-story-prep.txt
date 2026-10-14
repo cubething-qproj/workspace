@@ -1,0 +1,4941 @@
+=== SCOPE ===
+base_sha: 5d3fc8f756a2c740660ccd5d557a971c1a32542d
+head_sha: 
+scope_fingerprint: 8042b717f26a49b5c4c21627ec1547a0a648a433771a915aab51d02ae7987d39
+
+=== COMMITS ===
+billboards
+feat(hex-paths): typed placement, sliders, reveal and click-to-focus
+feat(hex-paths): node sites, billboards and camera focus
+refactor(hex-paths): move screen lifecycle into screen.rs
+ feat(hex-paths): honeycomb edges, step costs and a cost vie
+feat(hex-paths): terrain heightmap with a 3D orbit view
+refactor(hex-paths): strip old generators and tile-centre movement
+feat(hex-paths): growing tree generator
+feat(hex-paths): sight radius around the player
+feat(hex-paths): budgeted backbone with node loops and no dead ends
+walk
+feat(hex-paths): snapshot decoration candidates
+feat: add hex paths dev screen and seed measurements
+feat: add hex path board generation
+
+=== HUNKS ===
+--- (.gitignore, 2) [modified]
+@@ -2,3 +2,4 @@ target/
+ *.log
+ .direnv/
+ /.jackdaw
++*~
+
+--- (Cargo.toml, 14) [modified]
+@@ -14,6 +14,7 @@ clippy.nonstandard_macro_braces = "warn"
+ bevy = "0.19"
+ bevy_enhanced_input = "0.26"
+ bevy_asset_loader = "0.27"
++bevy_editor_cam = { version = "0.10", default-features = false }
+ avian3d = "0.7"
+ # Loads Jackdaw-authored `.bsn` scenes, answers the editor's schema query and
+ # connects Play-in-editor. 0.19 is git-only; keep `rev` matching the installed editor.
+
+--- (Cargo.toml, 22) [modified]
+@@ -22,6 +23,8 @@ jackdaw_runtime = { git = "https://github.com/ada-x64/jackdaw", branch="main", f
+ # not bevy
+ tiny_bail = "0.7"
+ bitflags = "2.9.3"
++hexx = "0.25"
++rand = "0.10"
+ 
+ q_screens = { git = "https://github.com/cubething-qproj/q_screens", version = "^0.2.0", features = ["bevy_picking", "bevy_gilrs"] }
+ q_cam = { git = "https://github.com/cubething-qproj/q_cam", version = "^0.1.0" }
+
+--- (Cargo.toml, 46) [modified]
+@@ -46,6 +49,7 @@ dev = [
+     "dep:bevy-inspector-egui",
+     "dep:built",
+     "q_cam/free_camera",
++    "bevy/bevy_feathers",
+ ]
+ dylib = ["bevy/dynamic_linking"]
+ jackdaw = ["jackdaw_runtime/pie"]
+
+--- (src/screen/dev/hex_paths/data.rs, 0) [added]
+@@ -0,0 +1,705 @@
++use super::{
++    layout::{Card, Context, Layout, Pace, TrailKind},
++    terrain::{
++        Terrain,
++        erosion::{Region, RegionKey},
++        world,
++    },
++};
++use crate::prelude::*;
++use std::collections::BTreeSet;
++
++/// Root of the entities replaced when the board regenerates.
++#[derive(Component)]
++pub struct BoardRoot;
++
++/// The terrain surface, rebuilt when the board or its appearance changes.
++#[derive(Component)]
++pub struct TerrainSurface;
++
++/// A quad that turns to face the camera.
++#[derive(Component)]
++pub struct Billboard;
++
++/// The tile of the pad a marker stands on.
++#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
++pub struct Pad(pub usize);
++
++/// What a billboard marks.
++#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
++pub enum Marker {
++    /// Spawn, before any regeneration.
++    Spawn,
++    /// Where the player stood at the last regeneration: the new spawn.
++    Player,
++    /// A point of interest and the card dealt to it, if any.
++    Poi(Option<Card>),
++    Bench,
++}
++
++/// Camera rendering only the hex board.
++#[derive(Component)]
++pub struct HexPathsCamera;
++
++/// UI camera state restored when the board stops compositing beneath it.
++#[derive(Resource)]
++pub struct UiCameraState {
++    pub entity: Entity,
++    pub clear_color: ClearColorConfig,
++}
++
++/// Shared billboard quad and materials, loaded with the screen.
++#[derive(Resource)]
++pub struct Billboards {
++    /// Upright quad standing on its origin.
++    pub quad: Handle<Mesh>,
++    pub spawn: Handle<StandardMaterial>,
++    pub player: Handle<StandardMaterial>,
++    pub bench: Handle<StandardMaterial>,
++    /// A point of interest with no card.
++    pub empty: Handle<StandardMaterial>,
++    pub key: Handle<StandardMaterial>,
++    pub npc: Handle<StandardMaterial>,
++    pub fear: Handle<StandardMaterial>,
++    /// A node whose type is not yet known.
++    pub unknown: Handle<StandardMaterial>,
++}
++
++/// Separate gizmo layer for the hex camera.
++#[derive(Default, GizmoConfigGroup, Reflect)]
++pub struct HexPathsGizmos;
++
++/// Text displaying the generated seed and errors.
++#[derive(Component, Default, Clone)]
++pub struct StatsText;
++
++/// Text input for a full-width unsigned seed; blank means random.
++#[derive(Component, Default, Clone)]
++pub struct SeedInput;
++
++/// Root node of the scrollable settings panel.
++#[derive(Component, Default, Clone)]
++pub struct SettingsPanel;
++
++/// Error in the seed text being edited, and why the last regeneration
++/// failed.
++#[derive(Resource, Default)]
++pub struct PanelState {
++    pub seed_error: Option<&'static str>,
++    pub regeneration_error: Option<&'static str>,
++}
++
++/// Binding between a slider and a generation setting.
++#[derive(Component, Clone, Copy)]
++pub struct SettingSlider {
++    pub read: fn(&HexPathsSettings) -> f32,
++    pub write: fn(&mut HexPathsSettings, f32),
++}
++
++/// Sizes and colors for the board preview and its debug panel.
++#[derive(Resource, Debug, Clone, Reflect)]
++#[reflect(Resource)]
++pub struct HexPathsAppearance {
++    pub panel_width: f32,
++    /// Zoom per mouse wheel line, in the same units as pixel scrolling.
++    pub zoom_per_line: f32,
++    pub grid: Color,
++    /// Grid lines float this far above the terrain.
++    pub grid_lift: f32,
++    /// Height colour stops, by height as a fraction of `colour_top_m`.
++    pub palette: Vec<(f32, Color)>,
++    /// Height drawn in the palette's last colour, in metres above the
++    /// region's outlets: absolute, so a colour is the same height on every
++    /// board.
++    pub colour_top_m: f32,
++    /// Heights are drawn this many times taller than true scale, which
++    /// reads as flat (about 25 m of relief across 1 km).
++    pub vertical_scale: f32,
++    /// Trail, creek and tease lines float this far above the terrain.
++    pub line_lift: f32,
++    /// Trail colours by the pass that laid them.
++    pub span: Color,
++    pub loop_trail: Color,
++    pub tree_trail: Color,
++    pub forced_trail: Color,
++    pub bank_trail: Color,
++    pub port_trail: Color,
++    pub pinned_trail: Color,
++    /// Trails that had to break a tease.
++    pub breaking_trail: Color,
++    pub creek: Color,
++    /// Outline of a crossing's pad.
++    pub crossing: Color,
++    /// Tease lines, viewer to target, shown with nodes revealed.
++    pub tease_held: Color,
++    pub tease_broken: Color,
++    /// Background the margin fades towards.
++    pub paper: Color,
++    /// How far the margin fades towards `paper`, 0–1.
++    pub margin_veil: f32,
++    /// Direction the hillshade light comes from.
++    pub light: Vec3,
++    /// Colour of the most buildable tiles in the suitability view.
++    pub score: Color,
++    /// Colour of the quietest bench sites in the bench score view.
++    pub quiet: Color,
++    /// Colour of the best overlooks in the bench score view.
++    pub overlook: Color,
++    /// Height of node and player billboards, in edge lengths.
++    pub billboard_height: f32,
++    /// Colour of the steepest edges in the cost view.
++    pub cost: Color,
++    /// Share of playable edges below the cost view's full colour, 0–1.
++    pub cost_percentile: f32,
++    /// Brightness of a slope facing away from the light.
++    pub shade_floor: f32,
++    /// Extra brightness of flat ground in full light.
++    pub shade_gain: f32,
++}
++
++impl Default for HexPathsAppearance {
++    fn default() -> Self {
++        let rgb = |r: u8, g: u8, b: u8| Color::srgb_u8(r, g, b);
++        Self {
++            panel_width: 340.,
++            zoom_per_line: 150.,
++            grid: Color::srgb(0.25, 0.28, 0.32),
++            grid_lift: 0.03,
++            palette: vec![
++                (0., rgb(110, 142, 96)),
++                (0.3, rgb(156, 170, 112)),
++                (0.55, rgb(190, 172, 124)),
++                (0.8, rgb(160, 134, 112)),
++                (1., rgb(236, 230, 220)),
++            ],
++            colour_top_m: 120.,
++            vertical_scale: 4.,
++            line_lift: 0.05,
++            span: rgb(43, 33, 28),
++            loop_trail: rgb(47, 111, 143),
++            tree_trail: rgb(123, 79, 160),
++            forced_trail: rgb(176, 58, 46),
++            bank_trail: rgb(31, 155, 176),
++            port_trail: rgb(217, 130, 43),
++            pinned_trail: rgb(138, 129, 120),
++            breaking_trail: rgb(224, 33, 138),
++            creek: rgb(47, 111, 176),
++            crossing: rgb(47, 111, 176),
++            tease_held: rgb(192, 57, 43),
++            tease_broken: rgb(127, 127, 127),
++            paper: rgb(255, 250, 240),
++            margin_veil: 0.45,
++            light: Vec3::new(-1., 1.4, 1.),
++            score: rgb(40, 90, 170),
++            quiet: rgb(40, 90, 170),
++            overlook: rgb(60, 150, 70),
++            billboard_height: 1.5,
++            cost: rgb(122, 28, 28),
++            cost_percentile: 0.98,
++            shade_floor: 0.62,
++            shade_gain: 0.3,
++        }
++    }
++}
++
++impl HexPathsAppearance {
++    /// The colour of a trail laid by `kind`.
++    pub fn trail(&self, kind: TrailKind) -> Color {
++        match kind {
++            TrailKind::Span => self.span,
++            TrailKind::Loop => self.loop_trail,
++            TrailKind::Tree => self.tree_trail,
++            TrailKind::Forced => self.forced_trail,
++            TrailKind::Bank => self.bank_trail,
++            TrailKind::Port => self.port_trail,
++            TrailKind::Pinned => self.pinned_trail,
++        }
++    }
++
++    /// Palette colour for a height in metres, interpolated between stops.
++    pub fn ramp(&self, height_m: f32) -> LinearRgba {
++        let x = (height_m / self.colour_top_m).clamp(0., 1.);
++        let colour = |c: Color| c.to_linear();
++        self.palette
++            .windows(2)
++            .find(|pair| x <= pair[1].0)
++            .map_or(colour(self.palette[self.palette.len() - 1].1), |pair| {
++                let (a, b) = (pair[0], pair[1]);
++                let t = ((x - a.0) / (b.0 - a.0)).clamp(0., 1.);
++                colour(a.1).mix(&colour(b.1), t)
++            })
++    }
++}
++
++/// Which measure the terrain is coloured by.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Reflect)]
++pub enum TerrainView {
++    /// Height and hillshade only.
++    #[default]
++    Heightmap,
++    /// Steep edges darken towards `HexPathsAppearance::cost`.
++    Cost,
++    /// Buildable ground, as node placement sees it, tints towards
++    /// `HexPathsAppearance::score`.
++    Suitability,
++    /// Good bench sites on paper: `HexPathsAppearance::quiet` for enclosed
++    /// spots, through to `overlook` for views down.
++    BenchScore,
++}
++
++/// How a view colours the terrain, per mesh point (corners, then centres).
++pub struct Tint {
++    /// Replaces the height colours underneath, if set.
++    pub base: Option<LinearRgba>,
++    pub colours: Vec<LinearRgba>,
++    /// How far each point leans towards its colour, 0–1.
++    pub amounts: Vec<f32>,
++}
++
++/// What the camera orbits and follows.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Reflect)]
++pub enum CameraFocus {
++    /// The middle of the board, from afar.
++    #[default]
++    Terrain,
++    /// The player, from close by. Spawn until there is a player.
++    Player,
++    /// The node on this tile, from close by.
++    Node(usize),
++}
++
++/// How the board is viewed. Editing these never regenerates a board.
++#[derive(Resource, Debug, Clone, PartialEq, Reflect)]
++#[reflect(Resource)]
++pub struct HexPathsView {
++    /// Which measure colours the terrain.
++    pub view: TerrainView,
++    pub focus: CameraFocus,
++    /// Shows every node's type, not just those the player has reached.
++    pub reveal_nodes: bool,
++    /// Camera pitch below the horizon on entering the screen, in degrees.
++    pub initial_tilt: f32,
++    /// Distance from the camera to the middle of a new board.
++    pub initial_distance: f32,
++    /// Distance from the camera to the player on focusing it.
++    pub player_distance: f32,
++}
++
++impl Default for HexPathsView {
++    fn default() -> Self {
++        Self {
++            view: TerrainView::default(),
++            focus: CameraFocus::default(),
++            reveal_nodes: false,
++            initial_tilt: 60.,
++            initial_distance: 30.,
++            player_distance: 10.,
++        }
++    }
++}
++
++/// The generated board: the terrain, the layout over it, and how it
++/// measures.
++#[derive(Resource)]
++pub struct Board {
++    pub terrain: Terrain,
++    pub layout: Layout,
++    /// The terrain seed.
++    pub seed: u64,
++    /// Layouts generated on this terrain before this one.
++    pub count: u32,
++    /// Whether this layout regenerated round the player, so spawn is where
++    /// the player stood.
++    pub regenerated: bool,
++    /// Middle of the playable area, and its mean corner height.
++    pub centre: (Vec2, f32),
++    pub pace: Pace,
++    /// Teases that hold: still a long way round, and visible.
++    pub held: BTreeSet<(usize, usize)>,
++    pub one_sided: usize,
++}
++
++impl Board {
++    /// `layout` over `terrain`, measured.
++    pub fn new(
++        terrain: Terrain,
++        layout: Layout,
++        knobs: (&HexPathsSettings, &HexTerrainTuning),
++        seed: u64,
++        count: u32,
++    ) -> Self {
++        let mut board = Self {
++            terrain,
++            layout,
++            seed,
++            count,
++            regenerated: false,
++            centre: (Vec2::ZERO, 0.),
++            pace: Pace::default(),
++            held: BTreeSet::new(),
++            one_sided: 0,
++        };
++        board.measure(knobs);
++        board
++    }
++
++    /// Replaces the layout with `layout`, the `count`th on this terrain.
++    pub fn replace_layout(&mut self, layout: Layout, count: u32, knobs: (&HexPathsSettings, &HexTerrainTuning)) {
++        self.layout = layout;
++        self.count = count;
++        self.measure(knobs);
++    }
++
++    /// Measures the layout: the board's middle, its pace, teases that hold
++    /// and one-sided crossings.
++    fn measure(&mut self, (settings, tuning): (&HexPathsSettings, &HexTerrainTuning)) {
++        let (terrain, layout) = (&self.terrain, &self.layout);
++        let context = Context {
++            terrain,
++            settings,
++            tuning,
++        };
++        let inside = terrain.mesh.playable_corners();
++        let (min, max, sum, corners) = terrain
++            .mesh
++            .positions
++            .iter()
++            .zip(&layout.heights)
++            .zip(&inside)
++            .filter(|(_, inside)| **inside)
++            .fold(
++                (Vec2::MAX, Vec2::MIN, 0., 0.),
++                |(min, max, sum, count), ((&p, &h), _)| (min.min(p), max.max(p), sum + h, count + 1.),
++            );
++        let broken = layout.broken_teases(context);
++        let held = layout
++            .tease_pairs
++            .iter()
++            .copied()
++            .filter(|&(v, t)| !broken.contains(&(v, t)) && layout.visible(context, v, t))
++            .collect();
++        let (pace, one_sided) = (layout.pace(context), layout.one_sided(context));
++        self.centre = ((min + max) / 2., sum / corners);
++        self.pace = pace;
++        self.held = held;
++        self.one_sided = one_sided;
++    }
++
++    /// `focus` if it still marks something on this board: a node focus whose
++    /// node is gone (a new layout, a smaller board) falls back to the player.
++    pub fn keep_focus(&self, focus: CameraFocus) -> CameraFocus {
++        match focus {
++            CameraFocus::Node(tile) if !self.layout.all_nodes().any(|n| n.tile == tile) => CameraFocus::Player,
++            focus => focus,
++        }
++    }
++
++    /// Where the camera looks for `focus`, with heights scaled by
++    /// `vertical_scale`.
++    pub fn focus(&self, focus: CameraFocus, vertical_scale: f32) -> Vec3 {
++        match focus {
++            CameraFocus::Terrain => world(self.centre.0, self.centre.1 * vertical_scale),
++            CameraFocus::Player => self.pad(self.layout.spawn, vertical_scale),
++            CameraFocus::Node(tile) => self.pad(tile, vertical_scale),
++        }
++    }
++
++    /// The middle of the pad on `tile`, at its levelled height scaled by
++    /// `vertical_scale`.
++    pub fn pad(&self, tile: usize, vertical_scale: f32) -> Vec3 {
++        let mut corners = self.terrain.mesh.tile_corners[tile].map(|c| self.layout.heights[c]);
++        corners.sort_by(f32::total_cmp);
++        world(self.terrain.mesh.centers[tile], (corners[2] + corners[3]) / 2. * vertical_scale)
++    }
++}
++
++/// Seed and error from the latest generation attempt.
++#[derive(Resource, Default)]
++pub struct BoardStats {
++    pub seed: u64,
++    pub error: Option<&'static str>,
++}
++
++/// The last region simulated, kept so that changes that don't touch the
++/// terrain (the layout, the board's size) skip the simulation.
++#[derive(Resource, Default)]
++pub struct RegionCache(pub Option<(RegionKey, Region)>);
++
++/// Board generation settings: the design's knobs, in metres and hectares.
++/// Changing these regenerates the board.
++#[derive(Resource, Debug, Clone, PartialEq, Reflect)]
++#[reflect(Resource)]
++pub struct HexPathsSettings {
++    pub columns: u32,
++    pub rows: u32,
++    /// The terrain seed; `None` draws a fresh one every generation. It also
++    /// seeds the first layout.
++    pub seed: Option<u64>,
++    /// Metres the region rises against its outlets each erosion pass; more
++    /// gives deeper valleys.
++    pub uplift_m: f32,
++    /// Water gathered from this many hectares starts cutting a channel; less
++    /// gives more ravines.
++    pub channel_ha: f32,
++    /// Channels draining this many hectares are creeks.
++    pub creek_ha: f32,
++    /// Points of interest to place, on buildable ground.
++    pub pois: u32,
++    /// Benches to place, at the best views and hollows.
++    pub benches: u32,
++    /// How strongly node sites prefer buildable ground; 0 ignores it.
++    pub spread: f32,
++    /// Bench preference, 0–1: 0 favours quiet, enclosed spots, 1 overlooks.
++    pub view: f32,
++    /// Fords and bridges over the main creek; trails cross creeks only there.
++    pub crossings: u32,
++    /// Tease pairs: a view of a point of interest that is a long walk away.
++    pub teases: u32,
++    /// How much points of interest gather near water: up to `1 + water_boost`
++    /// times as likely beside a creek.
++    pub water_boost: f32,
++}
++
++impl Default for HexPathsSettings {
++    fn default() -> Self {
++        Self {
++            columns: 20,
++            rows: 20,
++            seed: None,
++            uplift_m: 0.2,
++            channel_ha: 2.,
++            creek_ha: 40.,
++            pois: 6,
++            benches: 3,
++            spread: 2.,
++            view: 0.7,
++            crossings: 2,
++            teases: 2,
++            water_boost: 1.,
++        }
++    }
++}
++
++impl HexPathsSettings {
++    /// Validates invariants on HexPathsSettings. Returns the first violated
++    /// invariant.
++    pub fn validate(&self) -> Result<(), &'static str> {
++        [
++            (self.columns > 0 && self.rows > 0, "grid must not be empty"),
++            (self.uplift_m > 0., "uplift must be positive"),
++            (
++                self.channel_ha > 0. && self.creek_ha >= self.channel_ha,
++                "channels must start at a positive area, and creeks at no less",
++            ),
++            ((0. ..=1.).contains(&self.view), "view must be within 0..=1"),
++            (
++                self.spread >= 0. && self.water_boost >= 0.,
++                "spread and water boost must not be negative",
++            ),
++        ]
++        .into_iter()
++        .find(|(ok, _)| !ok)
++        .map_or(Ok(()), |(_, reason)| Err(reason))
++    }
++}
++
++/// How a candidate window into the simulated region is ranked: each feature
++/// scores 0–1, and the window with the highest weighted sum wins.
++#[derive(Debug, Clone, PartialEq, Reflect)]
++pub struct WindowWeights {
++    /// Creek tiles in the playable area, full marks at `creek_tiles`.
++    pub creek: f32,
++    pub creek_tiles: f32,
++    /// Ford sites (main-creek tiles whose corners span at most
++    /// `ford_bank_m`), `ford_spacing` hexes apart; full marks at
++    /// `fords_wanted`.
++    pub fords: f32,
++    pub fords_wanted: f32,
++    pub ford_bank_m: f32,
++    pub ford_spacing: f32,
++    /// Natural teases: tiles that see a tile 3–6 hexes away at least
++    /// `tease_drop_m` lower; full marks at `viewers`.
++    pub teases: f32,
++    pub viewers: f32,
++    pub tease_drop_m: f32,
++    /// A creek, not a river: a penalty when the biggest flow passes
++    /// `river_ha`.
++    pub river: f32,
++    pub river_ha: f32,
++    /// Weak preference for relief within `relief_m`.
++    pub relief: f32,
++    pub relief_m: Vec2,
++}
++
++impl Default for WindowWeights {
++    fn default() -> Self {
++        Self {
++            creek: 1.,
++            creek_tiles: 40.,
++            fords: 1.,
++            fords_wanted: 2.,
++            ford_bank_m: 3.,
++            ford_spacing: 4.,
++            teases: 1.,
++            viewers: 4.,
++            tease_drop_m: 12.,
++            river: 1.,
++            river_ha: 600.,
++            relief: 0.25,
++            relief_m: Vec2::new(15., 60.),
++        }
++    }
++}
++
++/// The prototype's internal constants, from hex-lab `exp/15-density` (arm
++/// `trunk-sight`). Changing these regenerates the board.
++#[derive(Resource, Debug, Clone, PartialEq, Reflect)]
++#[reflect(Resource)]
++pub struct HexTerrainTuning {
++    /// Extra hexes of scenery around the playable board. Even, to keep the
++    /// even-q offset parity.
++    pub margin: u32,
++    /// Length of one hex edge, in metres.
++    pub edge_m: f32,
++    /// Board raster cells per hex edge length.
++    pub resolution: f32,
++    /// The simulated region is this many hexes across (one cell per edge).
++    pub region_hexes: u32,
++    /// Percent the region's starting surface falls across it.
++    pub regional_pct: f32,
++    /// Rolling rises on the starting surface: height and size, in metres.
++    pub roll_m: f32,
++    pub roll_size_m: f32,
++    /// White-noise roughness on the starting surface; breaks grid-straight
++    /// channels.
++    pub roughness_m: f32,
++    /// Metres cut per pass by a channel draining 1 km² on a 1:10 slope.
++    pub erodibility: f32,
++    /// Erosion passes.
++    pub iterations: u32,
++    /// Slope creep per pass, as a fraction of the 4-neighbour Laplacian
++    /// (below 0.25).
++    pub creep: f32,
++    /// Random windows ranked; the best becomes the board.
++    pub candidates: u32,
++    pub window: WindowWeights,
++    /// Steepness aversion in Tobler's hiking function: a step costs
++    /// `exp(aversion × |rise|)`, rise in edge lengths.
++    pub aversion: f32,
++    /// Nodes keep at least this many hexes apart while they can.
++    pub min_spacing: f32,
++    /// How far a bench's view counts, in hexes.
++    pub view_radius: f32,
++    /// Eye height above the ground, in metres.
++    pub eye_m: f32,
++    /// Height of whatever marks a node (a roof, a post), in metres.
++    pub landmark_m: f32,
++    /// Ground this far below a viewer counts fully toward an overlook.
++    pub overlook_m: f32,
++    /// Tease ranking stops rewarding drops beyond this.
++    pub tease_top_m: f32,
++    /// Teases are this many hexes apart at most.
++    pub sight: f32,
++    /// A tease holds while walking to its target is at least this many times
++    /// the open ground between the pads.
++    pub tease_detour: f32,
++    /// Layouts redone, at most, to replace teases a route had to break.
++    pub tease_retries: u32,
++    /// Exponent on the quiet and overlook ranks before they blend into the
++    /// bench score. 1 is the prototype; higher keeps only the extremes.
++    pub bench_sharpness: f32,
++    /// The spanner builds a trail when the network makes you walk more than
++    /// this many times the direct cost.
++    pub stretch: f32,
++    /// Cost multiplier for walking an existing trail, so trails merge.
++    pub reuse: f32,
++    /// Cost multiplier for walking beside a trail without joining it.
++    pub alongside: f32,
++    /// A loop-closing trail may be at most this many edges long.
++    pub max_connector: u32,
++    /// A node gets a loop only if it costs at most this many times its
++    /// existing link.
++    pub cheap_loop: f32,
++    /// A closed loop is at least this many trail edges round.
++    pub min_loop: u32,
++    /// Ground around pads rises or falls at most this much per edge length.
++    pub grade: f32,
++    /// A part of the board cut off by the main creek needs this many dry
++    /// interior tiles to be worth a crossing.
++    pub min_part: u32,
++    /// Partial regeneration keeps everything within this many hexes of the
++    /// player.
++    pub pin_radius: f32,
++    /// Moved nodes land this many hexes from where they were.
++    pub displacement: Vec2,
++}
++
++impl Default for HexTerrainTuning {
++    fn default() -> Self {
++        Self {
++            margin: 6,
++            edge_m: 33.,
++            resolution: 2.,
++            region_hexes: 100,
++            regional_pct: 0.2,
++            roll_m: 4.,
++            roll_size_m: 1500.,
++            roughness_m: 1.,
++            erodibility: 60.,
++            iterations: 250,
++            creep: 0.08,
++            candidates: 60,
++            window: WindowWeights::default(),
++            aversion: 3.5,
++            min_spacing: 3.,
++            view_radius: 6.,
++            eye_m: 1.5,
++            landmark_m: 4.,
++            overlook_m: 12.,
++            tease_top_m: 24.,
++            sight: 6.,
++            tease_detour: 3.,
++            tease_retries: 4,
++            bench_sharpness: 4.,
++            stretch: 2.,
++            reuse: 0.6,
++            alongside: 2.5,
++            max_connector: 18,
++            cheap_loop: 3.,
++            min_loop: 14,
++            grade: 0.5,
++            min_part: 7,
++            pin_radius: 4.,
++            displacement: Vec2::new(2., 4.),
++        }
++    }
++}
++
++impl HexTerrainTuning {
++    /// Validates invariants on HexTerrainTuning. Returns the first violated
++    /// invariant.
++    pub fn validate(&self) -> Result<(), &'static str> {
++        [
++            (self.margin.is_multiple_of(2), "margin must be even"),
++            (
++                self.edge_m > 0. && self.resolution > 0.,
++                "edge length and resolution must be positive",
++            ),
++            (self.candidates > 0, "at least one window must be ranked"),
++            ((0. ..0.25).contains(&self.creep), "creep must be within 0..0.25"),
++            (self.bench_sharpness > 0., "bench sharpness must be positive"),
++            (
++                self.displacement.x <= self.displacement.y,
++                "displacement must be a range",
++            ),
++        ]
++        .into_iter()
++        .find(|(ok, _)| !ok)
++        .map_or(Ok(()), |(_, reason)| Err(reason))
++    }
++
++    /// `metres` in edge lengths, the generator's height unit.
++    pub fn edges(&self, metres: f32) -> f32 {
++        metres / self.edge_m
++    }
++}
+
+--- (src/screen/dev/hex_paths/layout/crossings.rs, 0) [added]
+@@ -0,0 +1,269 @@
++//! Crossings: trails cross creeks only at crossing nodes, which sit on the
++//! main creek and must lead to two other nodes (hex-lab `layout.py`,
++//! `trunk_sites` to `join_banks`).
++
++use super::{Context, Layout, Node, NodeKind, TrailKind};
++use crate::screen::dev::hex_paths::terrain::{HexMesh, Terrain, window::bank_span};
++use std::collections::BTreeSet;
++
++/// Interior tiles off the creeks: where nodes other than crossings go.
++pub fn dry_tiles(terrain: &Terrain) -> Vec<usize> {
++    let interior = terrain.mesh.interior();
++    (0..terrain.mesh.tiles.len())
++        .filter(|&t| interior[t] && !terrain.creeks.on(t))
++        .collect()
++}
++
++/// Per edge: a creek side trails may not use, i.e. any not on the pad
++/// perimeter of one of the `crossings` tiles.
++pub fn creek_closed(terrain: &Terrain, crossings: &[usize]) -> Vec<bool> {
++    let mut closed = vec![false; terrain.mesh.edges.len()];
++    terrain.creek_sides().into_iter().for_each(|e| closed[e] = true);
++    for &t in crossings {
++        terrain.mesh.perimeter(t).into_iter().for_each(|e| closed[e] = false);
++    }
++    closed
++}
++
++/// Per corner, which part of the playable board it is in, when trails cross
++/// creeks only at `crossings` and may not use the `closed` edges. Parts are
++/// labelled by a representative corner.
++pub fn corner_parts(terrain: &Terrain, crossings: &[usize], closed: &[usize]) -> Vec<usize> {
++    let mesh = &terrain.mesh;
++    let mut shut = creek_closed(terrain, crossings);
++    closed.iter().for_each(|&e| shut[e] = true);
++    let mut parent: Vec<usize> = (0..mesh.positions.len()).collect();
++    fn find(parent: &mut [usize], mut x: usize) -> usize {
++        while parent[x] != x {
++            parent[x] = parent[parent[x]];
++            x = parent[x];
++        }
++        x
++    }
++    for (e, &[a, b]) in mesh.edges.iter().enumerate() {
++        if mesh.playable_edges[e] && !shut[e] {
++            let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
++            parent[ra] = rb;
++        }
++    }
++    (0..parent.len()).map(|x| find(&mut parent, x)).collect()
++}
++
++/// Per tile: whether a node there would be out of reach of spawn, on a
++/// creek, or outside the interior.
++pub fn cut_off(terrain: &Terrain, crossings: &[usize], spawn: usize) -> Vec<bool> {
++    let label = corner_parts(terrain, crossings, &[]);
++    let corners = &terrain.mesh.tile_corners;
++    let home = label[corners[spawn][0]];
++    let mut cut = vec![true; terrain.mesh.tiles.len()];
++    for t in dry_tiles(terrain) {
++        cut[t] = label[corners[t][0]] != home;
++    }
++    cut
++}
++
++/// Crossings on the main creek only. First, any needed to join parts of the
++/// board the main creek cuts off, if each part has room for a node
++/// (`min_part` dry tiles), lowest banks first. Then the rest up to
++/// `crossings`, on tiles with two banks that open onto room for a node, each
++/// as far as possible from the others: two crossings land near opposite
++/// ends, so the creek doesn't bisect the trails. (The bank filter is new in
++/// the port; hex-lab spread over every main-creek tile and could drop both.)
++pub fn trunk_sites(context: Context, avoid: usize) -> Vec<usize> {
++    let terrain = context.terrain;
++    let mesh = &terrain.mesh;
++    let interior = mesh.interior();
++    let main = terrain.creeks.main_ha(mesh);
++    let trunk: Vec<usize> = (0..mesh.tiles.len())
++        .filter(|&t| t != avoid && interior[t] && terrain.creeks.on(t) && terrain.creeks.flow_ha[t] >= main)
++        .collect();
++    let bank = |t: usize| bank_span(mesh.tile_corners[t].map(|c| terrain.heights[c]));
++    let mut by_bank = trunk.clone();
++    by_bank.sort_by(|&a, &b| bank(a).total_cmp(&bank(b)));
++    let dry = dry_tiles(terrain);
++    let mut chosen: Vec<usize> = Vec::new();
++    for t in by_bank {
++        let label = corner_parts(terrain, &chosen, &[]);
++        let mut sizes = vec![0u32; label.len()];
++        dry.iter().for_each(|&d| sizes[label[mesh.tile_corners[d][0]]] += 1);
++        let roots: BTreeSet<usize> = mesh.tile_corners[t].iter().map(|&c| label[c]).collect();
++        if roots.iter().filter(|&&r| sizes[r] >= context.tuning.min_part).count() > 1 {
++            chosen.push(t);
++        }
++    }
++    // Spread only over tiles that can lead somewhere: two banks or more,
++    // each opening onto room for a node. The creek's head has one bank (you
++    // walk round it), and a bank facing a sliver by the board's edge has no
++    // room; either would be dropped later, leaving the creek uncrossed.
++    let sides: BTreeSet<usize> = terrain.creek_sides().into_iter().collect();
++    let trunk: Vec<usize> = trunk
++        .into_iter()
++        .filter(|&t| {
++            let label = corner_parts(terrain, &[], &mesh.perimeter(t));
++            let mut sizes = vec![0u32; label.len()];
++            dry.iter().for_each(|&d| sizes[label[mesh.tile_corners[d][0]]] += 1);
++            pad_banks(mesh, t, &sides)
++                .iter()
++                .filter(|bank| bank.iter().any(|&c| sizes[label[c]] >= context.tuning.min_part))
++                .count()
++                >= 2
++        })
++        .collect();
++    let middle = trunk.iter().map(|&t| mesh.centers[t]).sum::<bevy::math::Vec2>() / trunk.len().max(1) as f32;
++    while chosen.len() < context.settings.crossings as usize {
++        let far = |t: usize| {
++            if chosen.is_empty() {
++                mesh.centers[t].distance(middle)
++            } else {
++                chosen
++                    .iter()
++                    .map(|&c| mesh.centers[t].distance(mesh.centers[c]))
++                    .fold(f32::INFINITY, f32::min)
++            }
++        };
++        let Some(best) = trunk
++            .iter()
++            .copied()
++            .filter(|t| !chosen.contains(t))
++            .max_by(|&a, &b| far(a).total_cmp(&far(b)))
++        else {
++            break;
++        };
++        chosen.push(best);
++    }
++    chosen
++}
++
++/// A crossing's banks: its pad's corners, split where the creek crosses its
++/// sides.
++pub fn pad_banks(mesh: &HexMesh, tile: usize, sides: &BTreeSet<usize>) -> Vec<Vec<usize>> {
++    let (corners, perimeter) = (mesh.tile_corners[tile], mesh.perimeter(tile));
++    let mut banks: Vec<Vec<usize>> = Vec::new();
++    for (i, &corner) in corners.iter().enumerate() {
++        match banks.last_mut() {
++            Some(bank) if !sides.contains(&perimeter[i]) => bank.push(corner),
++            _ => banks.push(vec![corner]),
++        }
++    }
++    if banks.len() > 1 && !sides.contains(&perimeter[0]) {
++        let last = banks.pop().expect("more than one bank");
++        banks[0].splice(0..0, last);
++    }
++    banks
++}
++
++/// For each bank of `crossing`, the tiles of spawn and the other
++/// non-crossing nodes reachable from it without crossing its pad.
++fn bank_reach(terrain: &Terrain, crossing: &Node, nodes: &[Node], spawn: usize) -> Vec<BTreeSet<usize>> {
++    let mesh = &terrain.mesh;
++    let others: Vec<usize> = nodes
++        .iter()
++        .filter(|n| n.kind == NodeKind::Crossing && n.id != crossing.id)
++        .map(|n| n.tile)
++        .collect();
++    let label = corner_parts(terrain, &others, &mesh.perimeter(crossing.tile));
++    let targets: Vec<usize> = std::iter::once(spawn)
++        .chain(nodes.iter().filter(|n| n.kind != NodeKind::Crossing).map(|n| n.tile))
++        .collect();
++    let sides: BTreeSet<usize> = terrain.creek_sides().into_iter().collect();
++    pad_banks(mesh, crossing.tile, &sides)
++        .into_iter()
++        .map(|bank| {
++            let parts: BTreeSet<usize> = bank.iter().map(|&c| label[c]).collect();
++            targets
++                .iter()
++                .copied()
++                .filter(|&t| parts.contains(&label[mesh.tile_corners[t][0]]))
++                .collect()
++        })
++        .collect()
++}
++
++/// A crossing is valid only if at least two of its banks lead to nodes
++/// (spawn counts), and to at least two different ones. Invalid crossings are
++/// dropped one at a time, rechecking the rest each time, since one crossing
++/// can be another's way round.
++pub fn drop_dead_crossings(terrain: &Terrain, mut nodes: Vec<Node>, spawn: usize) -> Vec<Node> {
++    loop {
++        let dead = nodes.iter().filter(|n| n.kind == NodeKind::Crossing).find(|c| {
++            let reach: Vec<BTreeSet<usize>> = bank_reach(terrain, c, &nodes, spawn)
++                .into_iter()
++                .filter(|r| !r.is_empty())
++                .collect();
++            let all: BTreeSet<usize> = reach.iter().flatten().copied().collect();
++            reach.len() < 2 || all.len() < 2
++        });
++        match dead.map(|d| d.id) {
++            Some(id) => nodes.retain(|n| n.id != id),
++            None => return nodes,
++        }
++    }
++}
++
++impl Layout {
++    /// Every bank of a crossing that leads somewhere is reached by a trail: a
++    /// bank with none gets one, to the nearest trail or pad on that bank. The
++    /// pad's own sides are closed, so the route can't go round the pad to
++    /// the other bank. The tease guard picks among each corner's route,
++    /// cheapest first.
++    pub(super) fn join_banks(&mut self, context: Context) {
++        let mesh = &context.terrain.mesh;
++        let sides: BTreeSet<usize> = context.terrain.creek_sides().into_iter().collect();
++        let costs = self.step_costs(context);
++        let pads = self.pad_corners(context);
++        let crossings: Vec<usize> = self
++            .nodes
++            .iter()
++            .filter(|n| n.kind == NodeKind::Crossing)
++            .map(|n| n.tile)
++            .collect();
++        for tile in crossings {
++            let pad: BTreeSet<usize> = mesh.tile_corners[tile].into_iter().collect();
++            let on_trail = self.trail_corners(context);
++            for bank in pad_banks(mesh, tile, &sides) {
++                if bank.iter().any(|&v| self.leaves_pad(context, v, &pad)) {
++                    continue;
++                }
++                let mut weights = costs.clone();
++                self.trail.keys().for_each(|&e| weights[e] = f32::INFINITY);
++                mesh.perimeter(tile).into_iter().for_each(|e| weights[e] = f32::INFINITY);
++                let targets: BTreeSet<usize> = on_trail.union(&pads).copied().filter(|c| !pad.contains(c)).collect();
++                let mut paths: Vec<Vec<usize>> = bank
++                    .iter()
++                    .filter_map(|&v| self.corner_route(context, v, &weights, &targets))
++                    .collect();
++                let cost = |p: &Vec<usize>| p.iter().map(|&e| weights[e]).sum::<f32>();
++                paths.sort_by(|a, b| cost(a).total_cmp(&cost(b)));
++                if !paths.is_empty() && !self.lay(context, &paths, TrailKind::Bank, true) {
++                    self.lay(context, &paths[..1], TrailKind::Bank, false);
++                }
++            }
++        }
++    }
++
++    /// Whether a trail leaves corner `v` away from the pad's perimeter.
++    fn leaves_pad(&self, context: Context, v: usize, pad: &BTreeSet<usize>) -> bool {
++        self.trail.keys().any(|&e| {
++            let [a, b] = context.terrain.mesh.edges[e];
++            (a == v || b == v) && !(pad.contains(&a) && pad.contains(&b))
++        })
++    }
++
++    /// Crossings fewer than two of whose banks have a trail leaving them.
++    pub fn one_sided(&self, context: Context) -> usize {
++        let mesh = &context.terrain.mesh;
++        let sides: BTreeSet<usize> = context.terrain.creek_sides().into_iter().collect();
++        self.nodes
++            .iter()
++            .filter(|n| n.kind == NodeKind::Crossing)
++            .filter(|n| {
++                let pad: BTreeSet<usize> = mesh.tile_corners[n.tile].into_iter().collect();
++                pad_banks(mesh, n.tile, &sides)
++                    .iter()
++                    .filter(|bank| bank.iter().any(|&v| self.leaves_pad(context, v, &pad)))
++                    .count()
++                    < 2
++            })
++            .count()
++    }
++}
+
+--- (src/screen/dev/hex_paths/layout/mod.rs, 0) [added]
+@@ -0,0 +1,586 @@
++//! The layout layer: nodes and trails over the terrain, ported from hex-lab
++//! (`misc/hex-lab/src/hexlab/layout.py` and `terrain.py`, `exp/15-density`,
++//! arm `trunk-sight`). A layout is a pure function of the terrain, a seed and
++//! what is pinned, so a regeneration is the same call with pins. Pure data:
++//! no ECS.
++
++use super::{
++    data::*,
++    terrain::{SQRT_3, Terrain, sites},
++};
++use crate::prelude::*;
++use rand::{SeedableRng, rngs::StdRng, seq::SliceRandom};
++use std::collections::{BTreeMap, BTreeSet};
++
++mod crossings;
++mod network;
++
++pub use network::Pace;
++
++/// Ids of crossing nodes start here, after points of interest and benches.
++const FIRST_CROSSING_ID: u32 = 1000;
++
++/// What a node is.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum NodeKind {
++    /// A ford or bridge over the main creek. Never moves.
++    Crossing,
++    Poi,
++    Bench,
++}
++
++/// The deck's guaranteed cards, dealt onto points of interest. The deck never
++/// changes; other points of interest are empty.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum Card {
++    Key,
++    Npc,
++    Fear,
++}
++
++const DECK: [Card; 3] = [Card::Key, Card::Npc, Card::Fear];
++
++/// A node keeps its id, kind and card across regenerations.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct Node {
++    pub id: u32,
++    pub tile: usize,
++    pub kind: NodeKind,
++    pub card: Option<Card>,
++}
++
++/// Which pass laid a trail edge.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum TrailKind {
++    /// The spanner, joining nodes.
++    Span,
++    /// A cheap loop.
++    Loop,
++    /// A loop for a node still on a spur.
++    Tree,
++    /// The connection pass, so nothing is cut off.
++    Forced,
++    /// Reaches a crossing's far bank.
++    Bank,
++    /// Joins a pinned trail's open end.
++    Port,
++    /// Kept from before a regeneration.
++    Pinned,
++}
++
++/// What a regeneration keeps. The player's tile becomes spawn; fixed nodes
++/// stay; movable nodes are placed again near their tile; `trails` are laid
++/// first.
++#[derive(Debug, Clone, Default)]
++pub struct Pins {
++    pub player: usize,
++    /// The node the player stands on, if any: it stays, as spawn.
++    pub here: Option<Node>,
++    pub fixed: Vec<Node>,
++    pub movable: Vec<Node>,
++    pub trails: BTreeSet<usize>,
++}
++
++/// Nodes and trails over a terrain. Points are spawn, then `nodes`: point
++/// `i > 0` is `nodes[i - 1]`.
++#[derive(Debug, Clone)]
++pub struct Layout {
++    pub spawn: usize,
++    /// In id order, so the same node keeps its place across regenerations.
++    pub nodes: Vec<Node>,
++    /// The node on spawn's tile (where the player stood), if any.
++    pub player_node: Option<Node>,
++    /// Corner heights with pads levelled: the model layer over the terrain.
++    pub heights: Vec<f32>,
++    /// Edges trails may not use: creek sides away from crossings.
++    pub blocked: Vec<bool>,
++    pub trail: BTreeMap<usize, TrailKind>,
++    /// Teases, as (viewer, target) points.
++    pub tease_pairs: Vec<(usize, usize)>,
++    /// Tease pairs not used because a route had to break them.
++    pub disqualified: BTreeSet<(usize, usize)>,
++    /// Trail edges laid unguarded that broke a tease, and the teases broken.
++    pub breaking: BTreeSet<usize>,
++    pub broke: BTreeSet<(usize, usize)>,
++    /// Open ends of pinned trails, which must join the new network.
++    pub ports: Vec<usize>,
++}
++
++/// What generation reads: the terrain and the settings.
++#[derive(Clone, Copy)]
++pub struct Context<'a> {
++    pub terrain: &'a Terrain,
++    pub settings: &'a HexPathsSettings,
++    pub tuning: &'a HexTerrainTuning,
++}
++
++impl Context<'_> {
++    /// Whether trails keep off creeks except at crossings.
++    fn creeks_matter(&self) -> bool {
++        self.settings.crossings > 0
++    }
++}
++
++impl Layout {
++    /// Spawn's tile, then each node's.
++    pub fn points(&self) -> Vec<usize> {
++        std::iter::once(self.spawn)
++            .chain(self.nodes.iter().map(|n| n.tile))
++            .collect()
++    }
++
++    /// The node at point `i`; spawn is `None`.
++    pub fn node(&self, i: usize) -> Option<&Node> {
++        i.checked_sub(1).map(|n| &self.nodes[n])
++    }
++
++    /// Every node, including the one the player stands on.
++    pub fn all_nodes(&self) -> impl Iterator<Item = &Node> {
++        self.nodes.iter().chain(&self.player_node)
++    }
++
++    /// Generates the layout over `context.terrain` for `seed` (the terrain
++    /// seed for the first layout; derived from it and the regeneration count
++    /// after), keeping `pins`.
++    ///
++    /// Two passes: the first, without teases, learns the walking order from
++    /// spawn. Breaking a tease disqualifies it: if any route had to break
++    /// one, the layout is redone without it, so another pair takes its place.
++    /// Teases still broken after `tease_retries` are dropped.
++    pub fn generate(context: Context, seed: u64, pins: Option<&Pins>) -> Result<Self, &'static str> {
++        let first = Self::build(context, seed, pins, None, &BTreeSet::new())?;
++        if context.settings.teases == 0 {
++            return Ok(first);
++        }
++        let walked = first.walked_from_spawn(context);
++        let mut disqualified = BTreeSet::new();
++        let mut layout = first;
++        for _ in 0..context.tuning.tease_retries.max(1) {
++            layout = Self::build(context, seed, pins, Some(&walked), &disqualified)?;
++            if layout.broke.is_empty() {
++                return Ok(layout);
++            }
++            disqualified.extend(layout.broke.iter().copied());
++        }
++        let broke = layout.broke.clone();
++        layout.tease_pairs.retain(|p| !broke.contains(p));
++        Ok(layout)
++    }
++
++    /// One pass. `walked` is the walking order from spawn learnt by the
++    /// first pass; teases are placed only when it's known.
++    fn build(
++        context: Context,
++        seed: u64,
++        pins: Option<&Pins>,
++        walked: Option<&[f32]>,
++        disqualified: &BTreeSet<(usize, usize)>,
++    ) -> Result<Self, &'static str> {
++        let Context {
++            terrain, settings, ..
++        } = context;
++        let mesh = &terrain.mesh;
++        let mut rng = StdRng::seed_from_u64(seed);
++        let mut spawn = match pins {
++            Some(pins) => pins.player,
++            None => mesh
++                .tile_at(settings.columns as i32 / 2, settings.rows as i32 / 2, context.tuning.margin)
++                .ok_or("the middle of the board is not a tile")?,
++        };
++        if pins.is_none() && context.creeks_matter() && terrain.creeks.on(spawn) {
++            // Spawn stands beside the creek, not in it.
++            spawn = crossings::dry_tiles(terrain)
++                .into_iter()
++                .min_by(|&a, &b| {
++                    let d = |t: usize| mesh.centers[t].distance(mesh.centers[spawn]);
++                    d(a).total_cmp(&d(b))
++                })
++                .ok_or("no dry ground for spawn")?;
++        }
++        let mut nodes = place_nodes(context, spawn, pins, &mut rng)?;
++        nodes.sort_by_key(|n| n.id);
++        let crossing_tiles: Vec<usize> = nodes
++            .iter()
++            .filter(|n| n.kind == NodeKind::Crossing)
++            .map(|n| n.tile)
++            .collect();
++        let mut layout = Self {
++            spawn,
++            nodes,
++            player_node: pins.and_then(|p| p.here),
++            heights: terrain.heights.clone(),
++            blocked: if context.creeks_matter() {
++                crossings::creek_closed(terrain, &crossing_tiles)
++            } else {
++                vec![false; mesh.edges.len()]
++            },
++            trail: BTreeMap::new(),
++            tease_pairs: Vec::new(),
++            disqualified: disqualified.clone(),
++            breaking: BTreeSet::new(),
++            broke: BTreeSet::new(),
++            ports: Vec::new(),
++        };
++        layout.level(context);
++        if let Some(pins) = pins {
++            layout.trail = pins.trails.iter().map(|&e| (e, TrailKind::Pinned)).collect();
++            layout.ports = layout.dead_ends(context);
++        }
++        if let Some(walked) = walked {
++            layout.tease_pairs = layout.choose_teases(context, walked);
++        }
++        layout.span(context)?;
++        layout.join_ports(context);
++        layout.close_loops(context, Some(context.tuning.max_connector), &BTreeSet::new(), TrailKind::Loop);
++        let targets = layout.tease_pairs.iter().map(|&(_, t)| t).collect();
++        layout.close_loops(context, None, &targets, TrailKind::Tree);
++        if context.creeks_matter() {
++            layout.join_banks(context);
++        }
++        layout.join_ports(context);
++        Ok(layout)
++    }
++
++    /// Partial regeneration (everything within `pin_radius` of the player
++    /// stays) or a Fear (only the player and the crossings stay; every other
++    /// node moves). Never while the player stands on a crossing.
++    pub fn regenerate(
++        &self,
++        context: Context,
++        seed: u64,
++        player: usize,
++        fear: bool,
++    ) -> Result<Self, &'static str> {
++        let mesh = &context.terrain.mesh;
++        let near = |p: Vec2| p.distance(mesh.centers[player]) <= context.tuning.pin_radius * SQRT_3;
++        let here = self.all_nodes().find(|n| n.tile == player).copied();
++        if here.is_some_and(|n| n.kind == NodeKind::Crossing) {
++            return Err("no regeneration on a crossing");
++        }
++        // Crossings are bridges and fords: physical, so they never move.
++        let crossings = self.all_nodes().filter(|n| n.kind == NodeKind::Crossing).copied();
++        let others = self
++            .all_nodes()
++            .filter(|n| Some(**n) != here && n.kind != NodeKind::Crossing)
++            .copied();
++        let pins = if fear {
++            Pins {
++                player,
++                here,
++                fixed: crossings.collect(),
++                movable: others.collect(),
++                trails: BTreeSet::new(),
++            }
++        } else {
++            let (stay, go): (Vec<Node>, Vec<Node>) = others.partition(|n| near(mesh.centers[n.tile]));
++            Pins {
++                player,
++                here,
++                fixed: crossings.chain(stay).collect(),
++                movable: go,
++                trails: self
++                    .trail
++                    .keys()
++                    .copied()
++                    .filter(|&e| mesh.edges[e].iter().all(|&c| near(mesh.positions[c])))
++                    .collect(),
++            }
++        };
++        Self::generate(context, seed, Some(&pins))
++    }
++
++    /// Tease pairs, as (viewer, target) points: the target a point of
++    /// interest within sight, the viewer reached first from spawn. Visible
++    /// pairs first, then those where the ground already drops furthest (up
++    /// to `tease_top_m`), then the closest; no point used twice, and none
++    /// `disqualified`.
++    fn choose_teases(&self, context: Context, walked: &[f32]) -> Vec<(usize, usize)> {
++        let tuning = context.tuning;
++        let n = self.nodes.len() + 1;
++        let top = tuning.edges(tuning.tease_top_m);
++        let mut candidates: Vec<(bool, f32, f32, usize, usize)> = (1..n)
++            .flat_map(|t| (1..n).map(move |v| (v, t)))
++            .filter(|&(v, t)| {
++                v != t
++                    && !self.disqualified.contains(&(v, t))
++                    && self.node(t).is_some_and(|n| n.kind == NodeKind::Poi)
++                    && self.crow(context, v, t) <= tuning.sight * SQRT_3
++                    && walked[v] < walked[t]
++            })
++            .map(|(v, t)| {
++                let drop = self.pad_height(context, v) - self.pad_height(context, t);
++                (!self.visible(context, v, t), -drop.min(top), self.crow(context, v, t), v, t)
++            })
++            .collect();
++        candidates.sort_by(|a, b| {
++            a.0.cmp(&b.0)
++                .then(a.1.total_cmp(&b.1))
++                .then(a.2.total_cmp(&b.2))
++                .then((a.3, a.4).cmp(&(b.3, b.4)))
++        });
++        let mut used = BTreeSet::new();
++        let mut pairs = Vec::new();
++        for (.., v, t) in candidates {
++            if pairs.len() == context.settings.teases as usize {
++                break;
++            }
++            if !used.contains(&v) && !used.contains(&t) {
++                pairs.push((v, t));
++                used.extend([v, t]);
++            }
++        }
++        pairs
++    }
++
++    /// Crow-fly distance between points, in edge lengths.
++    pub fn crow(&self, context: Context, a: usize, b: usize) -> f32 {
++        let centers = &context.terrain.mesh.centers;
++        let points = self.points();
++        centers[points[a]].distance(centers[points[b]])
++    }
++
++    /// Height of point `i`'s pad: the median of its levelled corners.
++    pub fn pad_height(&self, context: Context, i: usize) -> f32 {
++        median_corner(context.terrain.mesh.tile_corners[self.points()[i]].map(|c| self.heights[c]))
++    }
++
++    /// Whether someone standing on pad `a` sees the landmark on pad `b`, over
++    /// the levelled ground.
++    pub fn visible(&self, context: Context, a: usize, b: usize) -> bool {
++        let (mesh, tuning) = (&context.terrain.mesh, context.tuning);
++        let points = self.points();
++        let (pa, pb) = (mesh.centers[points[a]], mesh.centers[points[b]]);
++        let ha = self.pad_height(context, a) + tuning.edges(tuning.eye_m);
++        let hb = self.pad_height(context, b) + tuning.edges(tuning.landmark_m);
++        (3..57).all(|k| {
++            let f = k as f32 / 59.;
++            self.surface(context, pa + (pb - pa) * f)
++                .is_none_or(|ground| ground <= ha + (hb - ha) * f + 1e-6)
++        })
++    }
++
++    /// Height anywhere on the board, linear over the hex triangles (centres
++    /// at the mean of their corners); `None` off the mesh.
++    fn surface(&self, context: Context, point: Vec2) -> Option<f32> {
++        let mesh = &context.terrain.mesh;
++        let tile = mesh.tile_containing(point)?;
++        let corners = mesh.tile_corners[tile];
++        let centre = (mesh.centers[tile], corners.iter().map(|&c| self.heights[c]).sum::<f32>() / 6.);
++        (0..6).find_map(|i| {
++            let (a, b) = (corners[i], corners[(i + 1) % 6]);
++            let weights = barycentric(point, centre.0, mesh.positions[a], mesh.positions[b])?;
++            Some(weights.x * centre.1 + weights.y * self.heights[a] + weights.z * self.heights[b])
++        })
++    }
++}
++
++/// Places the nodes. A fresh layout puts crossings on the main creek, then
++/// points of interest by suitability (pulled to water) and benches by bench
++/// score, kept apart; then drops crossings that lead nowhere and deals the
++/// deck. A regeneration keeps the fixed nodes and places each movable one
++/// again `displacement` hexes from its tile, by the same scores. Nothing
++/// but a crossing sits on a creek, and nothing where trails can't reach it.
++fn place_nodes(
++    context: Context,
++    spawn: usize,
++    pins: Option<&Pins>,
++    rng: &mut StdRng,
++) -> Result<Vec<Node>, &'static str> {
++    let Context {
++        terrain,
++        settings,
++        tuning,
++    } = context;
++    let mesh = &terrain.mesh;
++    let mut buildable: Vec<f32> = terrain.suitability.iter().map(|s| s.powf(settings.spread)).collect();
++    let mut bench = terrain.bench_score();
++    let mut crossings = Vec::new();
++    let mut forbid = None;
++    if context.creeks_matter() {
++        // Points of interest gather near water; nothing but a crossing sits
++        // on a creek.
++        let creek: Vec<usize> = (0..mesh.tiles.len()).filter(|&t| terrain.creeks.on(t)).collect();
++        for (t, score) in buildable.iter_mut().enumerate() {
++            let near = creek
++                .iter()
++                .map(|&c| mesh.centers[t].distance(mesh.centers[c]) / SQRT_3)
++                .fold(f32::INFINITY, f32::min);
++            let dry = if terrain.creeks.on(t) { 0. } else { 1. };
++            *score *= (1. + settings.water_boost * (-near / 2.).exp()) * dry;
++        }
++        crossings = match pins {
++            None => crossings::trunk_sites(context, spawn)
++                .into_iter()
++                .zip(FIRST_CROSSING_ID..)
++                .map(|(tile, id)| Node {
++                    id,
++                    tile,
++                    kind: NodeKind::Crossing,
++                    card: None,
++                })
++                .collect(),
++            Some(pins) => pins.fixed.iter().filter(|n| n.kind == NodeKind::Crossing).copied().collect(),
++        };
++        if !crossings.is_empty() {
++            bench
++                .iter_mut()
++                .enumerate()
++                .filter(|(t, _)| terrain.creeks.on(*t))
++                .for_each(|(_, s)| *s = 0.);
++        }
++        let tiles: Vec<usize> = crossings.iter().map(|n: &Node| n.tile).collect();
++        forbid = Some(crossings::cut_off(terrain, &tiles, spawn));
++    }
++    let bench_room = |nodes: &[Node]| -> Vec<bool> {
++        (0..mesh.tiles.len())
++            .map(|t| {
++                nodes
++                    .iter()
++                    .filter(|n| n.kind == NodeKind::Bench)
++                    .all(|n| mesh.centers[t].distance(mesh.centers[n.tile]) / SQRT_3 >= tuning.min_spacing)
++            })
++            .collect()
++    };
++    let score = |kind: NodeKind| if kind == NodeKind::Bench { &bench } else { &buildable };
++    let place = |nodes: &[Node], node: Node, near: Option<(usize, Vec2)>, rng: &mut StdRng| {
++        let room = (node.kind == NodeKind::Bench).then(|| bench_room(nodes));
++        let taken: Vec<usize> = std::iter::once(spawn).chain(nodes.iter().map(|n| n.tile)).collect();
++        let constraints = sites::Constraints {
++            forbid: forbid.as_deref(),
++            room: room.as_deref(),
++            near,
++        };
++        sites::place(mesh, &taken, score(node.kind), tuning.min_spacing, &constraints, rng)
++            .map(|tile| Node { tile, ..node })
++            .ok_or("no room left for a node")
++    };
++    let Some(pins) = pins else {
++        let mut nodes = crossings;
++        let wanted = (0..settings.pois + settings.benches).map(|id| Node {
++            id,
++            tile: 0,
++            kind: if id < settings.pois { NodeKind::Poi } else { NodeKind::Bench },
++            card: None,
++        });
++        for node in wanted {
++            let placed = place(&nodes, node, None, rng)?;
++            nodes.push(placed);
++        }
++        if nodes.iter().any(|n| n.kind == NodeKind::Crossing) {
++            nodes = crossings::drop_dead_crossings(terrain, nodes, spawn);
++        }
++        let mut pois: Vec<usize> = (0..nodes.len()).filter(|&i| nodes[i].kind == NodeKind::Poi).collect();
++        pois.shuffle(rng);
++        for (&i, card) in pois.iter().zip(DECK) {
++            nodes[i].card = Some(card);
++        }
++        return Ok(nodes);
++    };
++    let mut nodes = pins.fixed.clone();
++    let mut order: Vec<usize> = (0..pins.movable.len()).collect();
++    order.shuffle(rng);
++    for i in order {
++        let node = pins.movable[i];
++        let placed = place(&nodes, node, Some((node.tile, tuning.displacement)), rng)?;
++        nodes.push(placed);
++    }
++    Ok(nodes)
++}
++
++/// The median of six corner heights: the mean of the middle two.
++fn median_corner(mut corners: [f32; 6]) -> f32 {
++    corners.sort_by(f32::total_cmp);
++    (corners[2] + corners[3]) / 2.
++}
++
++/// Barycentric weights of `p` in triangle `a`, `b`, `c`, if it's inside.
++fn barycentric(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> Option<Vec3> {
++    let (v0, v1, v2) = (b - a, c - a, p - a);
++    let denominator = v0.perp_dot(v1);
++    if denominator.abs() < f32::EPSILON {
++        return None;
++    }
++    let v = v2.perp_dot(v1) / denominator;
++    let w = v0.perp_dot(v2) / denominator;
++    let u = 1. - v - w;
++    (u >= -1e-4 && v >= -1e-4 && w >= -1e-4).then_some(Vec3::new(u, v, w))
++}
++
++/// A regeneration's seed, from the terrain seed and how many came before.
++pub fn regeneration_seed(seed: u64, count: u32) -> u64 {
++    seed ^ (count as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{super::terrain::tests::small, *};
++
++    /// Checks what every layout must hold: each node reachable, no dead
++    /// ends, crossings on the main creek and reached from two banks.
++    fn assert_sound(context: Context, layout: &Layout) {
++        let terrain = context.terrain;
++        assert_eq!(layout.pace(context).unreachable, 0);
++        assert!(layout.dead_ends(context).is_empty());
++        assert_eq!(layout.one_sided(context), 0);
++        let main = terrain.creeks.main_ha(&terrain.mesh);
++        for node in &layout.nodes {
++            let on_creek = terrain.creeks.on(node.tile);
++            match node.kind {
++                NodeKind::Crossing => assert!(on_creek && terrain.creeks.flow_ha[node.tile] >= main),
++                NodeKind::Poi | NodeKind::Bench => assert!(!on_creek),
++            }
++        }
++        assert!(!terrain.creeks.on(layout.spawn));
++    }
++
++    #[test]
++    fn layouts_reach_every_node_and_cross_creeks_only_at_crossings() {
++        let mut crossings = 0;
++        for seed in 1..=3 {
++            let (settings, tuning, terrain) = small(seed);
++            let context = Context {
++                terrain: &terrain,
++                settings: &settings,
++                tuning: &tuning,
++            };
++            let layout = Layout::generate(context, seed, None).expect("a layout");
++            assert_sound(context, &layout);
++            assert!(layout.trail.keys().all(|&e| !layout.blocked[e]));
++            assert!(layout.tease_pairs.iter().all(|p| !layout.broke.contains(p)));
++            crossings += layout.nodes.iter().filter(|n| n.kind == NodeKind::Crossing).count();
++        }
++        assert!(crossings > 0, "the seeds exercise crossings");
++    }
++
++    #[test]
++    fn regeneration_keeps_crossings_and_the_deck() {
++        let (settings, tuning, terrain) = small(2);
++        let context = Context {
++            terrain: &terrain,
++            settings: &settings,
++            tuning: &tuning,
++        };
++        let first = Layout::generate(context, 2, None).expect("a layout");
++        let poi = first.nodes.iter().find(|n| n.kind == NodeKind::Poi).expect("a point of interest");
++        let crossings = |l: &Layout| -> Vec<Node> {
++            l.all_nodes().filter(|n| n.kind == NodeKind::Crossing).copied().collect()
++        };
++        let deck = |l: &Layout| -> Vec<(u32, Option<Card>)> {
++            let mut cards: Vec<_> = l.all_nodes().map(|n| (n.id, n.card)).collect();
++            cards.sort_by_key(|c| c.0);
++            cards
++        };
++        for fear in [false, true] {
++            let next = first
++                .regenerate(context, regeneration_seed(2, 1), poi.tile, fear)
++                .expect("a regeneration");
++            assert_sound(context, &next);
++            assert_eq!(next.spawn, poi.tile);
++            assert_eq!(crossings(&next), crossings(&first));
++            assert_eq!(deck(&next), deck(&first));
++        }
++        if let Some(crossing) = crossings(&first).first() {
++            assert!(first.regenerate(context, 3, crossing.tile, true).is_err());
++        }
++    }
++}
+
+--- (src/screen/dev/hex_paths/layout/network.rs, 0) [added]
+@@ -0,0 +1,721 @@
++//! Trails on the honeycomb: routing, the tease guard, the spanner, loops,
++//! ports, levelling and pace (hex-lab `terrain.py`, `span` to `close_loops`,
++//! and `layout.py`'s `join_ports` and `pace`).
++
++use super::{Context, Layout, TrailKind};
++use crate::screen::dev::hex_paths::terrain::SQRT_3;
++use std::{
++    cmp::Ordering,
++    collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque},
++};
++
++/// Weight of a pad perimeter edge on the network: pads are plazas, free to
++/// cross.
++const PLAZA: f32 = 1e-6;
++/// Smoothed trails are shorter than their honeycomb zigzag.
++const SMOOTHING: f32 = SQRT_3 / 2.;
++/// Most candidate routes the guard tries per lay.
++const CANDIDATES: usize = 40;
++
++/// Shortest paths over corners from a set of sources.
++pub struct Search {
++    pub distance: Vec<f32>,
++    /// The corner and edge each corner was reached by.
++    previous: Vec<Option<(usize, usize)>>,
++}
++
++impl Search {
++    /// The path from the sources to `target`, as edges from the target end.
++    fn path(&self, mut target: usize) -> Vec<usize> {
++        let mut path = Vec::new();
++        while let Some((before, edge)) = self.previous[target] {
++            path.push(edge);
++            target = before;
++        }
++        path
++    }
++
++    /// The shortest distance to any of `corners`.
++    fn nearest(&self, corners: impl IntoIterator<Item = usize>) -> f32 {
++        corners
++            .into_iter()
++            .map(|c| self.distance[c])
++            .fold(f32::INFINITY, f32::min)
++    }
++}
++
++/// A heap entry for Dijkstra, nearest first.
++#[derive(PartialEq)]
++struct Nearest(f32, usize);
++
++impl Eq for Nearest {}
++
++impl Ord for Nearest {
++    fn cmp(&self, other: &Self) -> Ordering {
++        other.0.total_cmp(&self.0).then(other.1.cmp(&self.1))
++    }
++}
++
++impl PartialOrd for Nearest {
++    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
++        Some(self.cmp(other))
++    }
++}
++
++/// The trail graph with each pad collapsed to one vertex. Vertices are
++/// corners off pads, and `corners + i` for point `i`'s pad.
++struct Contracted {
++    corners: usize,
++    adjacent: BTreeMap<usize, BTreeSet<usize>>,
++}
++
++impl Contracted {
++    fn pad(&self, i: usize) -> usize {
++        self.corners + i
++    }
++
++    fn is_pad(&self, v: usize) -> bool {
++        v >= self.corners
++    }
++
++    fn neighbours(&self, v: usize) -> impl Iterator<Item = usize> + '_ {
++        self.adjacent.get(&v).into_iter().flatten().copied()
++    }
++
++    /// Hops from `start` to every vertex it reaches.
++    fn hops(&self, start: usize) -> BTreeMap<usize, u32> {
++        let mut hops = BTreeMap::from([(start, 0)]);
++        let mut queue = VecDeque::from([start]);
++        while let Some(v) = queue.pop_front() {
++            for w in self.neighbours(v) {
++                if !hops.contains_key(&w) {
++                    hops.insert(w, hops[&v] + 1);
++                    queue.push_back(w);
++                }
++            }
++        }
++        hops
++    }
++
++    /// Whether pad `i` has two separate ways (sharing no vertex) to some
++    /// other pad: it shares a biconnected block of three or more vertices
++    /// with one. Two exits that merge a step later don't count.
++    fn on_loop(&self, i: usize) -> bool {
++        let me = self.pad(i);
++        if !self.adjacent.contains_key(&me) {
++            return false;
++        }
++        self.blocks().iter().any(|block| {
++            block.len() >= 3 && block.contains(&me) && block.iter().any(|&v| v != me && self.is_pad(v))
++        })
++    }
++
++    /// Biconnected blocks (Tarjan), as vertex sets.
++    fn blocks(&self) -> Vec<BTreeSet<usize>> {
++        struct Walk<'a> {
++            graph: &'a Contracted,
++            depth: BTreeMap<usize, u32>,
++            low: BTreeMap<usize, u32>,
++            edges: Vec<(usize, usize)>,
++            blocks: Vec<BTreeSet<usize>>,
++        }
++        impl Walk<'_> {
++            fn visit(&mut self, v: usize, parent: Option<usize>, depth: u32) {
++                self.depth.insert(v, depth);
++                self.low.insert(v, depth);
++                for w in self.graph.neighbours(v).collect::<Vec<_>>() {
++                    if Some(w) == parent {
++                        continue;
++                    }
++                    match self.depth.get(&w).copied() {
++                        None => {
++                            self.edges.push((v, w));
++                            self.visit(w, Some(v), depth + 1);
++                            let low = self.low[&w].min(self.low[&v]);
++                            self.low.insert(v, low);
++                            if self.low[&w] >= depth {
++                                let mut block = BTreeSet::new();
++                                while let Some((a, b)) = self.edges.pop() {
++                                    block.extend([a, b]);
++                                    if (a, b) == (v, w) {
++                                        break;
++                                    }
++                                }
++                                self.blocks.push(block);
++                            }
++                        }
++                        Some(d) if d < depth => {
++                            self.edges.push((v, w));
++                            let low = self.low[&v].min(d);
++                            self.low.insert(v, low);
++                        }
++                        Some(_) => {}
++                    }
++                }
++            }
++        }
++        let mut walk = Walk {
++            graph: self,
++            depth: BTreeMap::new(),
++            low: BTreeMap::new(),
++            edges: Vec::new(),
++            blocks: Vec::new(),
++        };
++        for &v in self.adjacent.keys() {
++            if !walk.depth.contains_key(&v) {
++                walk.visit(v, None, 0);
++            }
++        }
++        walk.blocks
++    }
++
++    /// Trail corners on pad `i`'s way out, up to (not including) the first
++    /// junction or other pad.
++    fn spur(&self, i: usize) -> BTreeSet<usize> {
++        let mut out = BTreeSet::new();
++        let mut frontier: Vec<usize> = self.neighbours(self.pad(i)).collect();
++        while let Some(v) = frontier.pop() {
++            if out.contains(&v) || self.is_pad(v) || self.neighbours(v).count() > 2 {
++                continue;
++            }
++            out.insert(v);
++            frontier.extend(self.neighbours(v));
++        }
++        out
++    }
++}
++
++impl Layout {
++    /// Walking cost of each edge over the levelled heights; infinite off the
++    /// board and across closed creek sides.
++    pub(super) fn step_costs(&self, context: Context) -> Vec<f32> {
++        context
++            .terrain
++            .step_costs(&self.heights, context.tuning.aversion)
++            .into_iter()
++            .zip(&self.blocked)
++            .map(|(cost, &blocked)| if blocked { f32::INFINITY } else { cost })
++            .collect()
++    }
++
++    /// Every pad's corners.
++    pub(super) fn pad_corners(&self, context: Context) -> BTreeSet<usize> {
++        let corners = &context.terrain.mesh.tile_corners;
++        self.points().into_iter().flat_map(|t| corners[t]).collect()
++    }
++
++    /// Corners on a trail.
++    pub(super) fn trail_corners(&self, context: Context) -> BTreeSet<usize> {
++        let edges = &context.terrain.mesh.edges;
++        self.trail.keys().flat_map(|&e| edges[e]).collect()
++    }
++
++    /// Dijkstra from `sources` over edge `weights` (infinite = impassable).
++    pub(super) fn search(&self, context: Context, weights: &[f32], sources: &[usize]) -> Search {
++        let mesh = &context.terrain.mesh;
++        let mut search = Search {
++            distance: vec![f32::INFINITY; mesh.positions.len()],
++            previous: vec![None; mesh.positions.len()],
++        };
++        let mut heap = BinaryHeap::new();
++        for &s in sources {
++            search.distance[s] = 0.;
++            heap.push(Nearest(0., s));
++        }
++        while let Some(Nearest(d, v)) = heap.pop() {
++            if d > search.distance[v] {
++                continue;
++            }
++            for &(w, e) in &mesh.corner_edges[v] {
++                let next = d + weights[e];
++                if next < search.distance[w] {
++                    search.distance[w] = next;
++                    search.previous[w] = Some((v, e));
++                    heap.push(Nearest(next, w));
++                }
++            }
++        }
++        search
++    }
++
++    /// The corners of point `i`'s pad.
++    fn pad(&self, context: Context, i: usize) -> [usize; 6] {
++        context.terrain.mesh.tile_corners[self.points()[i]]
++    }
++
++    /// Cheapest paths from pad `a` to each reachable target, cheapest first,
++    /// as edges from the target end.
++    fn routes(&self, context: Context, a: usize, weights: &[f32], targets: &[usize]) -> Vec<Vec<usize>> {
++        let search = self.search(context, weights, &self.pad(context, a));
++        let mut reached: Vec<usize> = targets
++            .iter()
++            .copied()
++            .filter(|&t| search.distance[t].is_finite())
++            .collect();
++        reached.sort_by(|&x, &y| search.distance[x].total_cmp(&search.distance[y]));
++        reached.into_iter().map(|t| search.path(t)).collect()
++    }
++
++    /// Cheapest path from one corner to any target, as edges from the
++    /// target end.
++    pub(super) fn corner_route(
++        &self,
++        context: Context,
++        start: usize,
++        weights: &[f32],
++        targets: &BTreeSet<usize>,
++    ) -> Option<Vec<usize>> {
++        let search = self.search(context, weights, &[start]);
++        targets
++            .iter()
++            .copied()
++            .filter(|&t| search.distance[t].is_finite())
++            .min_by(|&x, &y| search.distance[x].total_cmp(&search.distance[y]))
++            .map(|t| search.path(t))
++    }
++
++    /// Multiplier per edge: `alongside` for edges off the trail within
++    /// `radius` hops of it, except edges stepping onto it. New trails join,
++    /// they don't shadow.
++    fn alongside(&self, context: Context, radius: u32) -> Vec<f32> {
++        let mesh = &context.terrain.mesh;
++        let on = self.trail_corners(context);
++        if on.is_empty() {
++            return vec![1.; mesh.edges.len()];
++        }
++        let mut hops = vec![u32::MAX; mesh.positions.len()];
++        let mut queue: VecDeque<usize> = on.iter().copied().collect();
++        on.iter().for_each(|&c| hops[c] = 0);
++        while let Some(v) = queue.pop_front() {
++            if hops[v] == radius {
++                continue;
++            }
++            for &(w, _) in &mesh.corner_edges[v] {
++                if hops[w] == u32::MAX {
++                    hops[w] = hops[v] + 1;
++                    queue.push_back(w);
++                }
++            }
++        }
++        mesh.edges
++            .iter()
++            .map(|&[u, v]| {
++                let near = |c: usize| hops[c] != u32::MAX && !on.contains(&c);
++                if (near(u) || near(v)) && !on.contains(&u) && !on.contains(&v) {
++                    context.tuning.alongside
++                } else {
++                    1.
++                }
++            })
++            .collect()
++    }
++
++    /// Edge weights for walking only on trails; pad perimeters are free.
++    fn network(&self, context: Context) -> Vec<f32> {
++        let costs = self.step_costs(context);
++        let mut weights = vec![f32::INFINITY; costs.len()];
++        self.trail.keys().for_each(|&e| weights[e] = costs[e]);
++        self.plazas(context, &mut weights);
++        weights
++    }
++
++    /// Sets every pad's perimeter to the plaza weight.
++    fn plazas(&self, context: Context, weights: &mut [f32]) {
++        for tile in self.points() {
++            context.terrain.mesh.perimeter(tile).into_iter().for_each(|e| weights[e] = PLAZA);
++        }
++    }
++
++    /// Trail edges walked from pad `a`, counting pads as free.
++    fn hops_from(&self, context: Context, a: usize) -> Search {
++        let hops: Vec<f32> = self
++            .network(context)
++            .into_iter()
++            .map(|w| if w < 1e-3 { PLAZA } else if w.is_finite() { 1. } else { f32::INFINITY })
++            .collect();
++        self.search(context, &hops, &self.pad(context, a))
++    }
++
++    /// Trail edges walked from pad `a` to pad `b`, per edge length of open
++    /// ground between the pads.
++    fn detour(&self, context: Context, a: usize, b: usize) -> f32 {
++        let walked = self.hops_from(context, a).nearest(self.pad(context, b));
++        walked / (self.crow(context, a, b) - 2.).max(1.)
++    }
++
++    /// Trail edges walked from spawn to each pad (infinite if unreachable).
++    pub fn walked_from_spawn(&self, context: Context) -> Vec<f32> {
++        let search = self.hops_from(context, 0);
++        (0..self.nodes.len() + 1)
++            .map(|i| search.nearest(self.pad(context, i)))
++            .collect()
++    }
++
++    /// Teases no longer a long way round, or whose target is reached before
++    /// its viewer.
++    pub fn broken_teases(&self, context: Context) -> BTreeSet<(usize, usize)> {
++        if self.tease_pairs.is_empty() {
++            return BTreeSet::new();
++        }
++        let walked = self.walked_from_spawn(context);
++        self.tease_pairs
++            .iter()
++            .copied()
++            .filter(|&(v, t)| {
++                self.detour(context, v, t) < context.tuning.tease_detour
++                    || (walked[t] <= walked[v] && walked[t].is_finite())
++            })
++            .collect()
++    }
++
++    /// Lays the first candidate route that breaks no more teases than are
++    /// already broken (any route, if not `guard`). An unguarded route that
++    /// does break a tease keeps its new edges in `breaking` and the teases it
++    /// broke in `broke`.
++    pub(super) fn lay(&mut self, context: Context, candidates: &[Vec<usize>], kind: TrailKind, guard: bool) -> bool {
++        let before = self.broken_teases(context);
++        for path in candidates {
++            let new: Vec<usize> = path.iter().copied().filter(|e| !self.trail.contains_key(e)).collect();
++            new.iter().for_each(|&e| {
++                self.trail.insert(e, kind);
++            });
++            let after = self.broken_teases(context);
++            let breaks = after.len() > before.len();
++            if !guard || !breaks {
++                if breaks {
++                    self.breaking.extend(new);
++                    self.broke.extend(after.difference(&before));
++                }
++                return true;
++            }
++            new.iter().for_each(|e| {
++                self.trail.remove(e);
++            });
++        }
++        false
++    }
++
++    /// Greedy spanner: for pairs in order of walking cost, builds a trail if
++    /// the network makes you walk more than `stretch` × the direct cost.
++    /// Tease pairs are never joined directly, and no trail may break a
++    /// tease. Anything left unconnected is then joined, breaking a tease
++    /// only if it must, so the board never softlocks; a node no trail can
++    /// reach is an error.
++    pub(super) fn span(&mut self, context: Context) -> Result<(), &'static str> {
++        let tuning = context.tuning;
++        let costs = self.step_costs(context);
++        let n = self.nodes.len() + 1;
++        let direct: Vec<Vec<f32>> = (0..n)
++            .map(|i| {
++                let search = self.search(context, &costs, &self.pad(context, i));
++                (0..n).map(|j| search.nearest(self.pad(context, j))).collect()
++            })
++            .collect();
++        let teases: BTreeSet<(usize, usize)> = self
++            .tease_pairs
++            .iter()
++            .flat_map(|&(v, t)| [(v, t), (t, v)])
++            .collect();
++        let mut pairs: Vec<(usize, usize)> = (0..n).flat_map(|a| (a + 1..n).map(move |b| (a, b))).collect();
++        pairs.sort_by(|x, y| direct[x.0][x.1].total_cmp(&direct[y.0][y.1]).then(x.cmp(y)));
++        // Twice: a pair the guard rejected early (say, a tease target before
++        // its viewer) may pass later.
++        for &(a, b) in pairs.iter().chain(&pairs) {
++            if teases.contains(&(a, b)) {
++                continue;
++            }
++            let walked = self.search(context, &self.network(context), &self.pad(context, a));
++            if walked.nearest(self.pad(context, b)) <= tuning.stretch * direct[a][b] {
++                continue;
++            }
++            let along = self.alongside(context, 1);
++            let weights: Vec<f32> = (0..costs.len())
++                .map(|e| costs[e] * along[e] * if self.trail.contains_key(&e) { tuning.reuse } else { 1. })
++                .collect();
++            let route = self.routes(context, a, &weights, &self.pad(context, b));
++            self.lay(context, &route[..route.len().min(1)], TrailKind::Span, true);
++        }
++        // Each pass joins at least one node, so n passes are enough.
++        for _ in 0..n {
++            let walked = self.hops_from(context, 0);
++            let cut: Vec<usize> = (0..n)
++                .filter(|&i| !walked.nearest(self.pad(context, i)).is_finite())
++                .collect();
++            if cut.is_empty() {
++                return Ok(());
++            }
++            let nearest_reached = |i: usize| {
++                (0..n)
++                    .filter(|j| !cut.contains(j))
++                    .map(|j| direct[i][j])
++                    .fold(f32::INFINITY, f32::min)
++            };
++            let a = cut
++                .iter()
++                .copied()
++                .min_by(|&x, &y| nearest_reached(x).total_cmp(&nearest_reached(y)))
++                .expect("something is cut off");
++            let reached: Vec<usize> = (0..n)
++                .filter(|j| !cut.contains(j))
++                .flat_map(|j| self.pad(context, j))
++                .collect();
++            let candidates = self.routes(context, a, &costs, &reached);
++            if candidates.is_empty() {
++                return Err("a node is cut off: no route to the rest");
++            }
++            if !self.lay(context, &candidates[..candidates.len().min(CANDIDATES)], TrailKind::Forced, true) {
++                self.lay(context, &candidates[..1], TrailKind::Forced, false);
++            }
++        }
++        Err("the connection pass made no progress")
++    }
++
++    /// The trail graph with pads collapsed.
++    fn contracted(&self, context: Context) -> Contracted {
++        let mesh = &context.terrain.mesh;
++        let corners = mesh.positions.len();
++        let label: BTreeMap<usize, usize> = self
++            .points()
++            .into_iter()
++            .enumerate()
++            .flat_map(|(i, t)| mesh.tile_corners[t].map(|c| (c, corners + i)))
++            .collect();
++        let mut adjacent: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
++        for &e in self.trail.keys() {
++            let [u, v] = mesh.edges[e].map(|c| label.get(&c).copied().unwrap_or(c));
++            if u != v {
++                adjacent.entry(u).or_default().insert(v);
++                adjacent.entry(v).or_default().insert(u);
++            }
++        }
++        Contracted { corners, adjacent }
++    }
++
++    /// Gives spawn, and (when cheap) every node, not on a loop a second
++    /// trail: one that touches no other trail until it meets one (or a pad),
++    /// away from the node's own spur, at most `cap` edges long, and closing
++    /// a loop at least `min_loop` edges round. Tries endings cheapest first;
++    /// must pass the guard. `cap` of `None` is the no-tree pass: any length,
++    /// any cost. Points in `spare` are skipped.
++    pub(super) fn close_loops(
++        &mut self,
++        context: Context,
++        cap: Option<u32>,
++        spare: &BTreeSet<usize>,
++        kind: TrailKind,
++    ) {
++        let (mesh, tuning) = (&context.terrain.mesh, context.tuning);
++        let costs = self.step_costs(context);
++        let pads = self.pad_corners(context);
++        let corners = mesh.positions.len();
++        let unit = vec![1.; mesh.edges.len()];
++        for i in 0..self.nodes.len() + 1 {
++            let graph = self.contracted(context);
++            if spare.contains(&i) || graph.on_loop(i) {
++                continue;
++            }
++            let mut budget = f32::INFINITY;
++            if i != 0 && cap.is_some() {
++                let walked = self.search(context, &self.network(context), &self.pad(context, i));
++                let link = (0..self.nodes.len() + 1)
++                    .filter(|&j| j != i)
++                    .map(|j| walked.nearest(self.pad(context, j)))
++                    .fold(f32::INFINITY, f32::min);
++                budget = tuning.cheap_loop * link;
++            }
++            let back = graph.hops(graph.pad(i));
++            let occupied: BTreeSet<usize> = self.trail_corners(context).difference(&pads).copied().collect();
++            let along = self.alongside(context, 2);
++            let mut weights: Vec<f32> = costs.iter().zip(&along).map(|(c, a)| c * a).collect();
++            self.trail.keys().for_each(|&e| weights[e] = f32::INFINITY);
++            // Stop at the first trail met, anywhere but this node's own spur.
++            // Keep 2 corners clear of the spur, so the loop isn't a thin
++            // finger beside it.
++            let spur = graph.spur(i);
++            let mut clear = spur.clone();
++            if !spur.is_empty() {
++                let sources: Vec<usize> = spur.iter().copied().collect();
++                let hops = self.search(context, &unit, &sources);
++                let own = self.pad(context, i);
++                clear.extend((0..corners).filter(|&c| hops.distance[c] <= 2. && !own.contains(&c)));
++            }
++            for (e, &[u, v]) in mesh.edges.iter().enumerate() {
++                if clear.contains(&u) || clear.contains(&v) {
++                    weights[e] = f32::INFINITY;
++                }
++            }
++            let label: BTreeMap<usize, usize> = (0..self.nodes.len() + 1)
++                .filter(|&j| j != i)
++                .flat_map(|j| self.pad(context, j).map(|c| (c, graph.pad(j))))
++                .collect();
++            let ends: Vec<usize> = occupied
++                .iter()
++                .chain(label.keys())
++                .copied()
++                .filter(|c| !clear.contains(c))
++                .collect::<BTreeSet<_>>()
++                .into_iter()
++                .collect();
++            let own = self.pad(context, i);
++            let options: Vec<Vec<usize>> = self
++                .routes(context, i, &weights, &ends)
++                .into_iter()
++                .filter(|path| {
++                    let Some(&first) = path.first() else {
++                        return false;
++                    };
++                    let end = path_end(mesh.edges[first], path.get(1).map(|&e| mesh.edges[e]), &own);
++                    let round = back
++                        .get(&label.get(&end).copied().unwrap_or(end))
++                        .map_or(f32::INFINITY, |&h| h as f32);
++                    path.iter().map(|&e| weights[e]).sum::<f32>() <= budget
++                        && cap.is_none_or(|cap| path.len() as u32 <= cap)
++                        && round + path.len() as f32 >= tuning.min_loop as f32
++                })
++                .take(CANDIDATES)
++                .collect();
++            self.lay(context, &options, kind, true);
++        }
++    }
++
++    /// Each trail corner's number of trail edges.
++    fn degrees(&self, context: Context) -> BTreeMap<usize, usize> {
++        let mut degrees = BTreeMap::new();
++        for &e in self.trail.keys() {
++            for c in context.terrain.mesh.edges[e] {
++                *degrees.entry(c).or_default() += 1;
++            }
++        }
++        degrees
++    }
++
++    /// Trail corners with one trail edge, not on a pad.
++    pub fn dead_ends(&self, context: Context) -> Vec<usize> {
++        let pads = self.pad_corners(context);
++        self.degrees(context)
++            .into_iter()
++            .filter(|&(c, degree)| degree == 1 && !pads.contains(&c))
++            .map(|(c, _)| c)
++            .collect()
++    }
++
++    /// Each port (a pinned trail's open end) still dead-ending joins the
++    /// cheapest other trail or pad it can reach without touching its own
++    /// stub: the dead-end run back to the first junction or pad.
++    pub(super) fn join_ports(&mut self, context: Context) {
++        let mesh = &context.terrain.mesh;
++        let costs = self.step_costs(context);
++        let pads = self.pad_corners(context);
++        for port in self.ports.clone() {
++            if !self.dead_ends(context).contains(&port) {
++                continue;
++            }
++            let mut neighbours: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
++            for &e in self.trail.keys() {
++                let [u, v] = mesh.edges[e];
++                neighbours.entry(u).or_default().push(v);
++                neighbours.entry(v).or_default().push(u);
++            }
++            let mut stub = BTreeSet::from([port]);
++            let mut frontier = vec![port];
++            while let Some(v) = frontier.pop() {
++                for &w in neighbours.get(&v).into_iter().flatten() {
++                    if !stub.contains(&w) && !pads.contains(&w) && neighbours[&w].len() <= 2 {
++                        stub.insert(w);
++                        frontier.push(w);
++                    }
++                }
++            }
++            stub.remove(&port);
++            let along = self.alongside(context, 2);
++            let mut weights: Vec<f32> = costs.iter().zip(&along).map(|(c, a)| c * a).collect();
++            self.trail.keys().for_each(|&e| weights[e] = f32::INFINITY);
++            for (e, &[u, v]) in mesh.edges.iter().enumerate() {
++                if stub.contains(&u) || stub.contains(&v) {
++                    weights[e] = f32::INFINITY;
++                }
++            }
++            let targets: BTreeSet<usize> = self
++                .trail_corners(context)
++                .union(&pads)
++                .copied()
++                .filter(|c| !stub.contains(c) && *c != port)
++                .collect();
++            if let Some(path) = self.corner_route(context, port, &weights, &targets) {
++                let path = [path];
++                if !self.lay(context, &path, TrailKind::Port, true) {
++                    self.lay(context, &path, TrailKind::Port, false);
++                }
++            }
++        }
++    }
++
++    /// The model layer: flattens each pad to the median of its corners, then
++    /// grades around it, cutting or filling only ground steeper than `grade`
++    /// from the pad edge and fading out from 1 to 2 edge lengths beyond it.
++    pub(super) fn level(&mut self, context: Context) {
++        let mesh = &context.terrain.mesh;
++        let grade = context.tuning.grade;
++        for tile in self.points() {
++            let target = super::median_corner(mesh.tile_corners[tile].map(|c| self.heights[c]));
++            for (h, &p) in self.heights.iter_mut().zip(&mesh.positions) {
++                let d = (p.distance(mesh.centers[tile]) - 1.).max(0.);
++                let graded = h.clamp(target - grade * d, target + grade * d);
++                let x = (d - 1.).clamp(0., 1.);
++                let w = 1. - x * x * (3. - 2. * x);
++                *h += w * (graded - *h);
++            }
++        }
++    }
++
++    /// Walking times by Tobler's hiking function on smoothed trails, with
++    /// each edge the mean of walking it either way.
++    pub fn pace(&self, context: Context) -> Pace {
++        let (mesh, tuning) = (&context.terrain.mesh, context.tuning);
++        let km = tuning.edge_m * SMOOTHING / 1000.;
++        let tobler = |slope: f32| 6. * (-3.5 * (slope + 0.05).abs()).exp();
++        let mut minutes = vec![f32::INFINITY; mesh.edges.len()];
++        let mut walk_all = 0.;
++        for &e in self.trail.keys() {
++            let [a, b] = mesh.edges[e];
++            let slope = (self.heights[b] - self.heights[a]) / SMOOTHING;
++            minutes[e] = km * 60. * (1. / tobler(slope) + 1. / tobler(-slope)) / 2.;
++            walk_all += minutes[e];
++        }
++        for tile in self.points() {
++            mesh.perimeter(tile).into_iter().for_each(|e| minutes[e] = 0.);
++        }
++        let search = self.search(context, &minutes, &self.pad(context, 0));
++        let times: Vec<f32> = (1..self.nodes.len() + 1)
++            .map(|i| search.nearest(self.pad(context, i)))
++            .collect();
++        Pace {
++            walk_all_min: walk_all,
++            trail_km: self.trail.len() as f32 * km,
++            farthest_min: times.iter().copied().filter(|t| t.is_finite()).fold(0., f32::max),
++            unreachable: times.iter().filter(|t| !t.is_finite()).count(),
++        }
++    }
++}
++
++/// How long the trails take to walk, in minutes.
++#[derive(Debug, Clone, Copy, Default)]
++pub struct Pace {
++    /// Every trail once.
++    pub walk_all_min: f32,
++    pub trail_km: f32,
++    /// Spawn to the farthest node it reaches.
++    pub farthest_min: f32,
++    /// Nodes spawn can't walk to.
++    pub unreachable: usize,
++}
++
++/// The corner a route from a pad ends on (routes run from the target end):
++/// the end of its first edge not shared with the next, or not on the pad.
++fn path_end(first: [usize; 2], second: Option<[usize; 2]>, pad: &[usize; 6]) -> usize {
++    match second {
++        Some(next) => first.into_iter().find(|c| !next.contains(c)),
++        None => first.into_iter().find(|c| !pad.contains(c)),
++    }
++    .unwrap_or(first[0])
++}
+
+--- (src/screen/dev/hex_paths/mod.rs, 0) [added]
+@@ -0,0 +1,42 @@
++use crate::prelude::*;
++use bevy_editor_cam::prelude::MinimalEditorCamPlugin;
++use bevy::{
++    feathers::FeathersPlugins,
++    gizmos::config::GizmoConfig,
++};
++
++mod data;
++mod layout;
++mod panel;
++mod screen;
++mod systems;
++mod terrain;
++#[cfg(test)]
++mod test;
++
++pub mod prelude {
++    pub use super::screen::HexPathsScreen;
++}
++
++/// Registers the hex paths prototype and its editable resources.
++pub fn plugin(app: &mut App) {
++    app.add_plugins((FeathersPlugins, MinimalEditorCamPlugin))
++        .init_resource::<data::HexPathsSettings>()
++        .init_resource::<data::HexTerrainTuning>()
++        .init_resource::<data::HexPathsView>()
++        .init_resource::<data::HexPathsAppearance>()
++        .init_resource::<data::PanelState>()
++        .init_resource::<data::RegionCache>()
++        .register_type::<data::HexPathsSettings>()
++        .register_type::<data::HexTerrainTuning>()
++        .register_type::<data::HexPathsView>()
++        .register_type::<data::HexPathsAppearance>()
++        .register_screen::<HexPathsScreen>()
++        .insert_gizmo_config(
++            data::HexPathsGizmos,
++            GizmoConfig {
++                render_layers: RenderLayers::layer(31),
++                ..default()
++            },
++        );
++}
+
+--- (src/screen/dev/hex_paths/panel.rs, 0) [added]
+@@ -0,0 +1,272 @@
++use super::{data::*, layout::NodeKind, systems};
++use crate::prelude::*;
++use bevy::{
++    feathers::{
++        controls::{
++            FeathersButton, FeathersSlider, FeathersTextInput, FeathersTextInputContainer,
++        },
++        display::{label, label_small},
++        theme::ThemeBackgroundColor,
++        tokens,
++    },
++    input_focus::{InputFocus, tab_navigation::TabGroup},
++    text::{EditableText, EditableTextFilter, TextEdit, TextEditChange},
++    ui_widgets::{Activate, ScrollArea, SliderPrecision, SliderStep, SliderValue, ValueChange},
++};
++
++/// Scrollable debug panel, with typed controls for all generation settings.
++pub(super) fn scene(width: f32) -> impl Scene {
++    bsn! {
++        ScreenScoped SettingsPanel TabGroup ScrollArea
++        Node {
++            position_type: PositionType::Absolute,
++            left: px(0), top: px(0), width: px(width), height: percent(100),
++            overflow: Overflow::scroll_y(),
++        }
++        ThemeBackgroundColor(tokens::WINDOW_BG)
++        Children [(
++            Node {
++                width: percent(100), flex_shrink: 0.,
++                flex_direction: FlexDirection::Column,
++                padding: px(12), row_gap: px(6),
++            }
++            Children [
++                label("Hex paths"),
++                (@FeathersButton { @caption: bsn! { label("Regenerate") } }
++                    on(|_: On<Activate>, mut settings: ResMut<HexPathsSettings>| { settings.set_changed(); })),
++                (label_small("") StatsText),
++                label("View"),
++                (Node { column_gap: px(4), flex_wrap: FlexWrap::Wrap, row_gap: px(4) } Children [
++                    (@FeathersButton { @caption: bsn! { label("Heightmap") } }
++                        on(|_: On<Activate>, mut v: ResMut<HexPathsView>| { v.view = TerrainView::Heightmap; })),
++                    (@FeathersButton { @caption: bsn! { label("Cost") } }
++                        on(|_: On<Activate>, mut v: ResMut<HexPathsView>| { v.view = TerrainView::Cost; })),
++                    (@FeathersButton { @caption: bsn! { label("Suitability") } }
++                        on(|_: On<Activate>, mut v: ResMut<HexPathsView>| { v.view = TerrainView::Suitability; })),
++                    (@FeathersButton { @caption: bsn! { label("Bench score") } }
++                        on(|_: On<Activate>, mut v: ResMut<HexPathsView>| { v.view = TerrainView::BenchScore; })),
++                ]),
++                (@FeathersButton { @caption: bsn! { label("Reveal nodes") } }
++                    on(|_: On<Activate>, mut v: ResMut<HexPathsView>| { v.reveal_nodes = !v.reveal_nodes; })),
++                label_small("Layout (same terrain; regenerate round the focus)"),
++                (Node { column_gap: px(4), flex_wrap: FlexWrap::Wrap, row_gap: px(4) } Children [
++                    (@FeathersButton { @caption: bsn! { label("New layout") } } on(relayout(None))),
++                    (@FeathersButton { @caption: bsn! { label("Regenerate here") } } on(relayout(Some(false)))),
++                    (@FeathersButton { @caption: bsn! { label("Fear here") } } on(relayout(Some(true)))),
++                ]),
++                label_small("Camera focus (or click a marker)"),
++                (Node { column_gap: px(4) } Children [
++                    (@FeathersButton { @caption: bsn! { label("Terrain") } }
++                        on(|_: On<Activate>, mut v: ResMut<HexPathsView>| { v.focus = CameraFocus::Terrain; })),
++                    (@FeathersButton { @caption: bsn! { label("Player") } }
++                        on(|_: On<Activate>, mut v: ResMut<HexPathsView>| { v.focus = CameraFocus::Player; })),
++                ]),
++                label("Generation"),
++                label_small("Seed (blank = random)"),
++                (@FeathersTextInputContainer Children [(
++                    @FeathersTextInput { @max_characters: 20usize }
++                    SeedInput EditableTextFilter::new(|c| c.is_ascii_digit())
++                    on(set_seed)
++                )]),
++                (@FeathersButton { @caption: bsn! { label("Pin current seed") } }
++                    on(|_: On<Activate>, stats: Option<Res<BoardStats>>, mut settings: ResMut<HexPathsSettings>| {
++                        if let Some(stats) = stats { settings.seed = Some(stats.seed); }
++                    })),
++                slider("Columns", 4., 40., 1., |s| s.columns as f32, |s, v| s.columns = v as u32),
++                slider("Rows", 4., 40., 1., |s| s.rows as f32, |s, v| s.rows = v as u32),
++                label("Terrain"),
++                slider("Uplift per pass (m)", 0.05, 1., 0.05, |s| s.uplift_m, |s, v| s.uplift_m = v),
++                slider("Channels start at (ha)", 0.5, 10., 0.5, |s| s.channel_ha, |s, v| s.channel_ha = v),
++                slider("Creeks start at (ha)", 10., 200., 5., |s| s.creek_ha, |s, v| s.creek_ha = v),
++                label("Nodes"),
++                slider("Points of interest", 0., 20., 1., |s| s.pois as f32, |s, v| s.pois = v as u32),
++                slider("Benches", 0., 10., 1., |s| s.benches as f32, |s, v| s.benches = v as u32),
++                slider("Prefer flat ground (spread)", 0., 4., 0.1, |s| s.spread, |s, v| s.spread = v),
++                slider("Bench view: quiet 0 – overlook 1", 0., 1., 0.05, |s| s.view, |s, v| s.view = v),
++                slider("Pull to water", 0., 3., 0.25, |s| s.water_boost, |s, v| s.water_boost = v),
++                label("Trails"),
++                slider("Crossings (0 ignores creeks)", 0., 4., 1., |s| s.crossings as f32, |s, v| s.crossings = v as u32),
++                slider("Teases", 0., 4., 1., |s| s.teases as f32, |s, v| s.teases = v as u32),
++            ]
++        )]
++    }
++}
++
++/// A button handler for a new layout on the same terrain: fresh (`None`), or
++/// a regeneration round the focus (`Some(fear)`). See [`systems::relayout`].
++fn relayout(
++    regeneration: Option<bool>,
++) -> impl FnMut(
++    On<Activate>,
++    Res<HexPathsSettings>,
++    Res<HexTerrainTuning>,
++    ResMut<HexPathsView>,
++    Option<ResMut<Board>>,
++    ResMut<PanelState>,
++) + Clone {
++    move |_, settings, tuning, mut view, board, mut panel| {
++        if let Some(mut board) = board {
++            systems::relayout(regeneration, &settings, &tuning, &mut view, &mut board, &mut panel);
++        }
++    }
++}
++
++/// Row with a slider for a generation setting. Dragging moves the slider;
++/// releasing it applies the value, since each change regenerates the board.
++fn slider(
++    caption: &'static str,
++    min: f32,
++    max: f32,
++    step: f32,
++    read: fn(&HexPathsSettings) -> f32,
++    write: fn(&mut HexPathsSettings, f32),
++) -> impl Scene {
++    let precision = if step < 1. { 2 } else { 0 };
++    bsn! {
++        Node { align_items: AlignItems::Center, column_gap: px(8) }
++        Children [
++            (label_small(caption) Node { width: percent(50) }),
++            (@FeathersSlider { @min: min, @max: max, @value: min }
++                Node { flex_grow: 1. }
++                SliderStep(step) SliderPrecision(precision)
++                template(move |_| Ok(SettingSlider { read, write }))
++                on(set_slider)),
++        ]
++    }
++}
++
++/// Shows a slider's value while it is dragged and applies it on release.
++fn set_slider(
++    change: On<ValueChange<f32>>,
++    mut commands: Commands,
++    fields: Query<&SettingSlider>,
++    mut settings: ResMut<HexPathsSettings>,
++) {
++    commands.entity(change.source).insert(SliderValue(change.value));
++    if change.is_final
++        && let Ok(field) = fields.get(change.source)
++    {
++        let mut next = settings.clone();
++        (field.write)(&mut next, change.value);
++        settings.set_if_neq(next);
++    }
++}
++
++/// Parses a seed without narrowing it through a signed integer or float.
++fn set_seed(
++    change: On<TextEditChange>,
++    inputs: Query<&EditableText, With<SeedInput>>,
++    mut settings: ResMut<HexPathsSettings>,
++    mut panel: ResMut<PanelState>,
++) {
++    let Ok(input) = inputs.get(change.event_target()) else {
++        return;
++    };
++    let text = input.value().to_string();
++    let seed = if text.is_empty() {
++        Ok(None)
++    } else {
++        text.parse::<u64>().map(Some)
++    };
++    match seed {
++        Ok(seed) => {
++            panel.seed_error = None;
++            if settings.seed != seed {
++                settings.seed = seed;
++            }
++        }
++        Err(_) => panel.seed_error = Some("Seed must fit an unsigned 64-bit integer."),
++    }
++}
++
++/// Reflects settings edits into the panel without overwriting focused seed text.
++pub(super) fn sync_settings(
++    settings: Res<HexPathsSettings>,
++    focus: Res<InputFocus>,
++    mut commands: Commands,
++    sliders: Query<(Entity, Ref<SettingSlider>, &SliderValue)>,
++    mut seeds: Query<(Entity, &mut EditableText, Ref<SeedInput>)>,
++) {
++    for (entity, field, value) in &sliders {
++        let setting = (field.read)(&settings);
++        if (settings.is_changed() || field.is_added()) && value.0 != setting {
++            commands.entity(entity).insert(SliderValue(setting));
++        }
++    }
++    for (entity, mut input, marker) in &mut seeds {
++        if (settings.is_changed() || marker.is_added()) && focus.get() != Some(entity) {
++            let text = settings
++                .seed
++                .map(|seed| seed.to_string())
++                .unwrap_or_default();
++            if input.value().to_string() != text {
++                input.queue_edit(TextEdit::SelectAll);
++                input.queue_edit(TextEdit::Insert(text.into()));
++            }
++        }
++    }
++}
++
++/// Displays the view, seed and how the board measures, and preserves useful
++/// errors while editing.
++pub(super) fn update_stats(
++    stats: Option<Res<BoardStats>>,
++    board: Option<Res<Board>>,
++    view: Res<HexPathsView>,
++    panel: Res<PanelState>,
++    mut texts: Query<&mut Text, With<StatsText>>,
++) {
++    let Some(stats) = stats else {
++        return;
++    };
++    let mut value = format!(
++        "View: {:?} | Focus: {:?} | Nodes revealed: {}\nSeed: {}",
++        view.view, view.focus, view.reveal_nodes, stats.seed
++    );
++    if let Some(board) = board {
++        let layout = &board.layout;
++        let crossings = layout.nodes.iter().filter(|n| n.kind == NodeKind::Crossing).count();
++        let window = &board.terrain.features;
++        value.push_str(&format!(
++            "\nWindow: relief {:.0} m | creek tiles {} | ford sites {} | tease spots {}\n\
++             Layout {} | walk all {:.0} min ({:.1} km) | spawn to farthest {:.0} min\n\
++             Crossings {crossings} ({} one-sided) | teases held {} of {} | unreachable {}",
++            window.relief_m,
++            window.creek_tiles,
++            window.fords,
++            window.tease_viewers,
++            board.count,
++            board.pace.walk_all_min,
++            board.pace.trail_km,
++            board.pace.farthest_min,
++            board.one_sided,
++            board.held.len(),
++            layout.tease_pairs.len(),
++            board.pace.unreachable,
++        ));
++    }
++    if let Some(error) = &stats.error {
++        value.push_str(&format!("\nGeneration error: {error}"));
++    }
++    if let Some(error) = panel.seed_error.or(panel.regeneration_error) {
++        value.push_str(&format!("\n{error}"));
++    }
++    for mut text in &mut texts {
++        if text.0 != value {
++            text.0.clone_from(&value);
++        }
++    }
++}
++
++/// Keeps panel width consistent with the camera's reserved area.
++pub(super) fn resize_panel(
++    appearance: Res<HexPathsAppearance>,
++    mut panels: Query<&mut Node, With<SettingsPanel>>,
++) {
++    for mut node in &mut panels {
++        let width = px(appearance.panel_width);
++        if node.width != width {
++            node.width = width;
++        }
++    }
++}
+
+--- (src/screen/dev/hex_paths/screen.rs, 0) [added]
+@@ -0,0 +1,143 @@
++use super::{data::*, panel, systems};
++use crate::prelude::*;
++use bevy::feathers::{dark_theme::create_dark_theme, theme::UiTheme};
++use bevy_editor_cam::prelude::{EditorCam, EnabledMotion};
++
++/// Dev screen for inspecting hex path generation.
++#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Reflect)]
++pub struct HexPathsScreen;
++
++impl Screen for HexPathsScreen {
++    fn builder(mut builder: ScreenScopeBuilder<Self>) -> ScreenScopeBuilder<Self> {
++        builder.add_systems(ScreenSchedule::Loading, init);
++        builder.add_systems(ScreenSchedule::OnReady, request_board);
++        builder.add_systems(
++            ScreenSchedule::Update,
++            (
++                systems::spawn_board.run_if(
++                    resource_changed::<HexPathsSettings>.or_else(resource_changed::<HexTerrainTuning>),
++                ),
++                systems::spawn_surface.run_if(
++                    resource_exists_and_changed::<Board>
++                        .or_else(resource_changed::<HexPathsView>)
++                        .or_else(resource_changed::<HexPathsAppearance>),
++                ),
++                systems::spawn_markers.run_if(
++                    resource_exists_and_changed::<Board>
++                        .or_else(resource_exists::<Board>.and_then(resource_changed::<HexPathsAppearance>)),
++                ),
++                systems::paint_markers,
++                systems::fit_viewport,
++                systems::pick_focus,
++                systems::aim_camera,
++                systems::orbit_camera,
++                systems::face_camera,
++                systems::draw_board,
++                panel::sync_settings,
++                panel::update_stats,
++                panel::resize_panel,
++            )
++                .chain(),
++        );
++        builder.add_systems(ScreenSchedule::OnUnload, unload);
++        builder
++    }
++
++    fn name() -> String {
++        "hex_paths".into()
++    }
++}
++
++/// Sets the dev theme, loads billboards, and creates the board camera and
++/// panel once when entering the screen.
++fn init(
++    mut commands: Commands,
++    server: Res<AssetServer>,
++    mut meshes: ResMut<Assets<Mesh>>,
++    mut materials: ResMut<Assets<StandardMaterial>>,
++    appearance: Res<HexPathsAppearance>,
++    view: Res<HexPathsView>,
++    mut ui_camera: Single<(Entity, &mut Camera), With<IsDefaultUiCamera>>,
++    mut screen: ScreenInfoMut<HexPathsScreen>,
++) {
++    commands.insert_resource(UiTheme(create_dark_theme()));
++    commands.insert_resource(UiCameraState {
++        entity: ui_camera.0,
++        clear_color: ui_camera.1.clear_color,
++    });
++    ui_camera.1.clear_color = ClearColorConfig::None;
++    commands.spawn((
++        Name::new("Hex Board Camera"),
++        ScreenScoped,
++        HexPathsCamera,
++        Camera3d::default(),
++        // Panning will follow the player or terrain instead.
++        EditorCam {
++            enabled_motion: EnabledMotion {
++                pan: false,
++                orbit: true,
++                zoom: true,
++            },
++            ..default()
++        },
++        Transform::from_rotation(Quat::from_rotation_x(-view.initial_tilt.to_radians())),
++        Camera {
++            order: CameraOrder::World as isize,
++            ..default()
++        },
++        RenderLayers::layer(31),
++    ));
++    let height = appearance.billboard_height;
++    let mut billboard = |name: &str| {
++        materials.add(StandardMaterial {
++            base_color_texture: Some(server.load(format!(
++                "textures/hex-prototype/{name}-billboard.png"
++            ))),
++            alpha_mode: AlphaMode::Mask(0.5),
++            unlit: true,
++            cull_mode: None,
++            ..default()
++        })
++    };
++    commands.insert_resource(Billboards {
++        quad: meshes.add(
++            Mesh::from(Rectangle::new(height / 2., height)).translated_by(Vec3::Y * height / 2.),
++        ),
++        spawn: billboard("spawn"),
++        player: billboard("player"),
++        bench: billboard("bench"),
++        empty: billboard("empty"),
++        key: billboard("key"),
++        npc: billboard("npc"),
++        fear: billboard("fear"),
++        unknown: billboard("unknown"),
++    });
++    commands.queue_spawn_scene(panel::scene(appearance.panel_width));
++    screen.finish_loading();
++}
++
++/// Requests a board on each screen entry; Update is the sole generation path.
++fn request_board(mut settings: ResMut<HexPathsSettings>) {
++    settings.set_changed();
++}
++
++/// Removes play-time resources when the screen's entities are cleaned up.
++pub(super) fn unload(
++    mut commands: Commands,
++    mut panel: ResMut<PanelState>,
++    mut cache: ResMut<RegionCache>,
++    ui_state: Option<Res<UiCameraState>>,
++    mut cameras: Query<&mut Camera>,
++) {
++    if let Some(state) = ui_state
++        && let Ok(mut camera) = cameras.get_mut(state.entity)
++    {
++        camera.clear_color = state.clear_color;
++    }
++    commands.remove_resource::<UiCameraState>();
++    commands.remove_resource::<Board>();
++    commands.remove_resource::<BoardStats>();
++    commands.remove_resource::<Billboards>();
++    cache.0 = None;
++    *panel = PanelState::default();
++}
+
+--- (src/screen/dev/hex_paths/systems.rs, 0) [added]
+@@ -0,0 +1,643 @@
++use super::{
++    data::*,
++    layout::{Card, Context, Layout, NodeKind, regeneration_seed},
++    terrain::{
++        Terrain,
++        erosion::{Region, RegionKey},
++        point_heights, world,
++    },
++};
++use crate::prelude::*;
++use bevy::{
++    asset::RenderAssetUsages,
++    camera::Viewport,
++    input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
++    mesh::{Indices, PrimitiveTopology},
++    window::PrimaryWindow,
++};
++use bevy_editor_cam::prelude::EditorCam;
++use rand::{SeedableRng, rngs::StdRng};
++
++/// Replaces the current board; invalid settings or a failed generation clear
++/// it and report an error. The region simulation is reused while the terrain
++/// settings and seed are unchanged.
++pub(super) fn spawn_board(
++    mut commands: Commands,
++    settings: Res<HexPathsSettings>,
++    tuning: Res<HexTerrainTuning>,
++    mut cache: ResMut<RegionCache>,
++    mut panel: ResMut<PanelState>,
++    mut view: ResMut<HexPathsView>,
++    roots: Query<Entity, With<BoardRoot>>,
++) {
++    for root in &roots {
++        commands.entity(root).despawn();
++    }
++    panel.regeneration_error = None;
++    let seed = settings.seed.unwrap_or_else(rand::random);
++    let board = settings.validate().and(tuning.validate()).and_then(|()| {
++        let key = RegionKey::new(seed, &settings, &tuning);
++        if cache.0.as_ref().is_none_or(|(cached, _)| *cached != key) {
++            let region = Region::simulate(&key, &mut StdRng::seed_from_u64(seed));
++            cache.0 = Some((key, region));
++        }
++        let (_, region) = cache.0.as_ref().expect("just simulated");
++        // The window draws from its own stream, so a cached region gives the
++        // same board as a fresh one.
++        let mut rng = StdRng::seed_from_u64(seed.wrapping_add(1));
++        let terrain = Terrain::generate(&settings, &tuning, region, &mut rng)?;
++        let context = Context {
++            terrain: &terrain,
++            settings: &settings,
++            tuning: &tuning,
++        };
++        let layout = Layout::generate(context, seed, None)?;
++        Ok(Board::new(terrain, layout, (&settings, &tuning), seed, 0))
++    });
++    match board {
++        Ok(board) => {
++            commands.spawn((
++                BoardRoot,
++                ScreenScoped,
++                Name::new("Hex Board"),
++                Transform::default(),
++                Visibility::default(),
++            ));
++            let focus = board.keep_focus(view.focus);
++            if view.focus != focus {
++                view.focus = focus;
++            }
++            commands.insert_resource(board);
++            commands.insert_resource(BoardStats { seed, error: None });
++        }
++        Err(error) => {
++            commands.remove_resource::<Board>();
++            commands.insert_resource(BoardStats {
++                seed,
++                error: Some(error),
++            });
++        }
++    }
++}
++
++/// A new layout on the same terrain: a fresh one (`regeneration` `None`), or
++/// a regeneration round the focused node or the player (a Fear if `true`).
++/// Failures leave the board as it was and report why.
++pub(super) fn relayout(
++    regeneration: Option<bool>,
++    settings: &HexPathsSettings,
++    tuning: &HexTerrainTuning,
++    view: &mut HexPathsView,
++    board: &mut Board,
++    panel: &mut PanelState,
++) {
++    let count = board.count + 1;
++    let seed = regeneration_seed(board.seed, count);
++    let context = Context {
++        terrain: &board.terrain,
++        settings,
++        tuning,
++    };
++    let layout = match regeneration {
++        None => Layout::generate(context, seed, None),
++        Some(fear) => {
++            let player = match board.keep_focus(view.focus) {
++                CameraFocus::Node(tile) => tile,
++                CameraFocus::Player | CameraFocus::Terrain => board.layout.spawn,
++            };
++            board.layout.regenerate(context, seed, player, fear)
++        }
++    };
++    match layout {
++        Ok(layout) => {
++            board.replace_layout(layout, count, (settings, tuning));
++            board.regenerated = regeneration.is_some();
++            panel.regeneration_error = None;
++            // After a regeneration the player stands on spawn; a fresh
++            // layout may have moved the focused node.
++            let focus = match regeneration {
++                Some(_) => CameraFocus::Player,
++                None => board.keep_focus(view.focus),
++            };
++            if view.focus != focus {
++                view.focus = focus;
++            }
++        }
++        Err(error) => panel.regeneration_error = Some(error),
++    }
++}
++
++/// Rebuilds the terrain surface under the board root, coloured by height,
++/// hill-shaded, and tinted by the current view's measure.
++pub(super) fn spawn_surface(
++    mut commands: Commands,
++    board: Option<Res<Board>>,
++    settings: Res<HexPathsSettings>,
++    tuning: Res<HexTerrainTuning>,
++    view: Res<HexPathsView>,
++    appearance: Res<HexPathsAppearance>,
++    roots: Query<Entity, With<BoardRoot>>,
++    surfaces: Query<Entity, With<TerrainSurface>>,
++    mut meshes: ResMut<Assets<Mesh>>,
++    mut materials: ResMut<Assets<StandardMaterial>>,
++) {
++    let (Some(board), Ok(root)) = (board, roots.single()) else {
++        return;
++    };
++    for surface in &surfaces {
++        commands.entity(surface).despawn();
++    }
++    commands.spawn((
++        TerrainSurface,
++        Name::new("Terrain"),
++        Mesh3d(meshes.add(surface_mesh(
++            &board,
++            &settings,
++            &tuning,
++            view.view,
++            &appearance,
++        ))),
++        MeshMaterial3d(materials.add(StandardMaterial {
++            unlit: true,
++            ..default()
++        })),
++        RenderLayers::layer(31),
++        ChildOf(root),
++    ));
++}
++
++/// Marks spawn (or the player, after a regeneration) and every point of
++/// interest and bench with a billboard on its pad; see [`paint_markers`] for
++/// what each shows. Crossings are drawn by [`draw_board`].
++pub(super) fn spawn_markers(
++    mut commands: Commands,
++    board: Res<Board>,
++    billboards: Res<Billboards>,
++    appearance: Res<HexPathsAppearance>,
++    roots: Query<Entity, With<BoardRoot>>,
++    markers: Query<Entity, With<Marker>>,
++) {
++    let Ok(root) = roots.single() else {
++        return;
++    };
++    for marker in &markers {
++        commands.entity(marker).despawn();
++    }
++    let layout = &board.layout;
++    let start = if board.regenerated { Marker::Player } else { Marker::Spawn };
++    let nodes = layout.nodes.iter().filter_map(|node| match node.kind {
++        NodeKind::Poi => Some((node.tile, Marker::Poi(node.card))),
++        NodeKind::Bench => Some((node.tile, Marker::Bench)),
++        NodeKind::Crossing => None,
++    });
++    for (tile, marker) in std::iter::once((layout.spawn, start)).chain(nodes) {
++        commands.spawn((
++            Name::new("Marker"),
++            marker,
++            Pad(tile),
++            Billboard,
++            Mesh3d(billboards.quad.clone()),
++            MeshMaterial3d(billboards.unknown.clone()),
++            Transform::from_translation(board.pad(tile, appearance.vertical_scale)),
++            RenderLayers::layer(31),
++            ChildOf(root),
++        ));
++    }
++}
++
++/// Shows each marker's billboard: spawn and the player always, node types
++/// and cards only when revealed.
++pub(super) fn paint_markers(
++    view: Res<HexPathsView>,
++    billboards: Res<Billboards>,
++    mut markers: Query<(Ref<Marker>, &mut MeshMaterial3d<StandardMaterial>)>,
++) {
++    for (marker, mut material) in &mut markers {
++        if !view.is_changed() && !marker.is_added() {
++            continue;
++        }
++        let handle = match *marker {
++            Marker::Spawn => &billboards.spawn,
++            Marker::Player => &billboards.player,
++            _ if !view.reveal_nodes => &billboards.unknown,
++            Marker::Bench => &billboards.bench,
++            Marker::Poi(None) => &billboards.empty,
++            Marker::Poi(Some(Card::Key)) => &billboards.key,
++            Marker::Poi(Some(Card::Npc)) => &billboards.npc,
++            Marker::Poi(Some(Card::Fear)) => &billboards.fear,
++        };
++        if material.0 != *handle {
++            material.0 = handle.clone();
++        }
++    }
++}
++
++/// Focuses the camera on the marker under a left click: spawn focuses the
++/// player, a node focuses that node.
++pub(super) fn pick_focus(
++    mouse: Res<ButtonInput<MouseButton>>,
++    window: Single<&Window, With<PrimaryWindow>>,
++    appearance: Res<HexPathsAppearance>,
++    camera: Single<(&Camera, &GlobalTransform), With<HexPathsCamera>>,
++    markers: Query<(&Marker, &Pad, &GlobalTransform)>,
++    mut view: ResMut<HexPathsView>,
++) {
++    let (camera, camera_transform) = *camera;
++    let Some(ray) = window
++        .cursor_position()
++        .filter(|_| mouse.just_pressed(MouseButton::Left))
++        .filter(|&cursor| {
++            camera
++                .logical_viewport_rect()
++                .is_some_and(|rect| rect.contains(cursor))
++        })
++        .and_then(|cursor| camera.viewport_to_world(camera_transform, cursor).ok())
++    else {
++        return;
++    };
++    // Nearest billboard whose middle passes within half its height of the ray.
++    let reach = appearance.billboard_height / 2.;
++    let hit = markers
++        .iter()
++        .filter_map(|(marker, pad, transform)| {
++            let middle = transform.translation() + Vec3::Y * reach;
++            let along = (middle - ray.origin).dot(*ray.direction);
++            let miss = middle.distance(ray.get_point(along));
++            (along > 0. && miss < reach).then_some((along, marker, pad))
++        })
++        .min_by(|a, b| a.0.total_cmp(&b.0));
++    if let Some((_, marker, pad)) = hit {
++        let focus = match marker {
++            Marker::Spawn | Marker::Player => CameraFocus::Player,
++            Marker::Poi(_) | Marker::Bench => CameraFocus::Node(pad.0),
++        };
++        if view.focus != focus {
++            view.focus = focus;
++        }
++    }
++}
++
++/// Turns billboards to face the camera.
++pub(super) fn face_camera(
++    camera: Single<&Transform, (With<HexPathsCamera>, Without<Billboard>)>,
++    mut billboards: Query<&mut Transform, With<Billboard>>,
++) {
++    for mut transform in &mut billboards {
++        transform.rotation = camera.rotation;
++    }
++}
++
++/// Keeps the camera's viewport to the window area beside the settings panel.
++pub(super) fn fit_viewport(
++    appearance: Res<HexPathsAppearance>,
++    window: Single<Ref<Window>, With<PrimaryWindow>>,
++    mut camera: Single<&mut Camera, With<HexPathsCamera>>,
++) {
++    if !window.is_changed() && !appearance.is_changed() && camera.viewport.is_some() {
++        return;
++    }
++    let size = window.physical_size();
++    if size.x == 0 || size.y == 0 {
++        return;
++    }
++    let panel = (appearance.panel_width * window.scale_factor()) as u32;
++    let panel = panel.min(size.x - 1);
++    camera.viewport = Some(Viewport {
++        physical_position: UVec2::new(panel, 0),
++        physical_size: UVec2::new(size.x - panel, size.y),
++        ..default()
++    });
++}
++
++/// Points the camera at its focus from the focus's starting distance,
++/// keeping its orientation, when the board or the focus changes.
++pub(super) fn aim_camera(
++    board: Option<Res<Board>>,
++    view: Res<HexPathsView>,
++    appearance: Res<HexPathsAppearance>,
++    mut aimed: Local<Option<(CameraFocus, f32)>>,
++    mut camera: Single<&mut Transform, With<HexPathsCamera>>,
++) {
++    let Some(board) = board else {
++        return;
++    };
++    // The vertical scale moves the focus, so it re-aims too.
++    let aim = (view.focus, appearance.vertical_scale);
++    if !board.is_changed() && *aimed == Some(aim) {
++        return;
++    }
++    *aimed = Some(aim);
++    let distance = match view.focus {
++        CameraFocus::Terrain => view.initial_distance,
++        CameraFocus::Player | CameraFocus::Node(_) => view.player_distance,
++    };
++    camera.translation =
++        board.focus(view.focus, appearance.vertical_scale) - camera.forward() * distance;
++}
++
++/// Orbits the camera about its focus while the right mouse button is held
++/// over the board, and zooms towards it with the mouse wheel.
++pub(super) fn orbit_camera(
++    mouse: Res<ButtonInput<MouseButton>>,
++    motion: Res<AccumulatedMouseMotion>,
++    scroll: Res<AccumulatedMouseScroll>,
++    appearance: Res<HexPathsAppearance>,
++    window: Single<&Window, With<PrimaryWindow>>,
++    board: Option<Res<Board>>,
++    view: Res<HexPathsView>,
++    camera: Single<(&Camera, &Transform, &mut EditorCam), With<HexPathsCamera>>,
++) {
++    let (camera, transform, mut controller) = camera.into_inner();
++    if mouse.just_released(MouseButton::Right) {
++        controller.end_move();
++    }
++    let Some(board) = board else {
++        return;
++    };
++    let over_board = window.cursor_position().is_some_and(|cursor| {
++        camera
++            .logical_viewport_rect()
++            .is_some_and(|rect| rect.contains(cursor))
++    });
++    let anchor = transform
++        .compute_affine()
++        .inverse()
++        .transform_point3(board.focus(view.focus, appearance.vertical_scale))
++        .as_dvec3();
++    let zoom = match scroll.unit {
++        MouseScrollUnit::Line => scroll.delta.y * appearance.zoom_per_line,
++        MouseScrollUnit::Pixel => scroll.delta.y,
++    };
++    if over_board && mouse.just_pressed(MouseButton::Right) {
++        controller.start_orbit(Some(anchor));
++    } else if over_board && zoom != 0. && !controller.current_motion.is_user_controlled() {
++        controller.start_zoom(Some(anchor));
++    }
++    if mouse.pressed(MouseButton::Right) {
++        controller.send_screenspace_input(motion.delta);
++    }
++    controller.send_zoom_input(zoom);
++    // A wheel zoom ends once its smoothed input settles.
++    let settled = controller.current_motion.inputs().is_none_or(|inputs| {
++        inputs.zoom_velocity_abs(controller.smoothing.zoom.mul_f32(2.)) == 0.
++    });
++    if controller.current_motion.is_zooming_only() && settled {
++        controller.end_move();
++    }
++}
++
++/// Outlines the playable tiles on the terrain, and draws the creeks,
++/// crossings and trails over it; with nodes revealed, teases too.
++pub(super) fn draw_board(
++    board: Option<Res<Board>>,
++    view: Res<HexPathsView>,
++    appearance: Res<HexPathsAppearance>,
++    mut gizmos: Gizmos<HexPathsGizmos>,
++) {
++    let Some(board) = board else {
++        return;
++    };
++    let (mesh, layout) = (&board.terrain.mesh, &board.layout);
++    let scale = appearance.vertical_scale;
++    let corner = |c: usize, lift: f32| world(mesh.positions[c], layout.heights[c] * scale + lift);
++    let points = point_heights(mesh, &layout.heights);
++    let centre = |t: usize, lift: f32| {
++        world(mesh.centers[t], points[mesh.positions.len() + t] * scale + lift)
++    };
++    for (corners, _) in mesh
++        .tile_corners
++        .iter()
++        .zip(&mesh.playable)
++        .filter(|(_, playable)| **playable)
++    {
++        gizmos.linestrip(
++            corners.iter().chain([&corners[0]]).map(|&c| corner(c, appearance.grid_lift)),
++            appearance.grid,
++        );
++    }
++    let lift = appearance.line_lift;
++    for (t, below) in board.terrain.creeks.downstream.iter().enumerate() {
++        if let Some(n) = below {
++            gizmos.line(centre(t, lift), centre(*n, lift), appearance.creek);
++        }
++    }
++    for node in layout.nodes.iter().filter(|n| n.kind == NodeKind::Crossing) {
++        let corners = mesh.tile_corners[node.tile];
++        gizmos.linestrip(
++            corners.iter().chain([&corners[0]]).map(|&c| corner(c, 2. * lift)),
++            appearance.crossing,
++        );
++    }
++    for (&e, &kind) in &layout.trail {
++        let [a, b] = mesh.edges[e];
++        let colour = if layout.breaking.contains(&e) {
++            appearance.breaking_trail
++        } else {
++            appearance.trail(kind)
++        };
++        gizmos.line(corner(a, lift), corner(b, lift), colour);
++    }
++    if view.reveal_nodes {
++        let tiles = layout.points();
++        for &(v, t) in &layout.tease_pairs {
++            let colour = if board.held.contains(&(v, t)) {
++                appearance.tease_held
++            } else {
++                appearance.tease_broken
++            };
++            let up = Vec3::Y * appearance.billboard_height;
++            gizmos.line(
++                board.pad(tiles[v], scale) + up,
++                board.pad(tiles[t], scale) + up,
++                colour,
++            );
++        }
++    }
++}
++
++/// The board's levelled ground as triangles around each tile centre, at
++/// `vertical_scale`. Colours follow the height ramp, shaded by slope, tinted
++/// by `view`, with the margin faded towards paper.
++fn surface_mesh(
++    board: &Board,
++    settings: &HexPathsSettings,
++    tuning: &HexTerrainTuning,
++    view: TerrainView,
++    appearance: &HexPathsAppearance,
++) -> Mesh {
++    let terrain = &board.terrain;
++    let mesh = &terrain.mesh;
++    let heights = point_heights(mesh, &board.layout.heights);
++    let positions: Vec<Vec3> = mesh
++        .positions
++        .iter()
++        .chain(&mesh.centers)
++        .zip(&heights)
++        .map(|(&p, &h)| world(p, h * appearance.vertical_scale))
++        .collect();
++    // Wind every triangle to face up.
++    let triangles: Vec<[usize; 3]> = mesh
++        .triangles()
++        .map(|[a, b, c]| {
++            let up = (positions[b] - positions[a])
++                .cross(positions[c] - positions[a])
++                .y;
++            if up >= 0. { [a, b, c] } else { [a, c, b] }
++        })
++        .collect();
++    let mut normals = vec![Vec3::ZERO; positions.len()];
++    for &[a, b, c] in &triangles {
++        // Unnormalised, so larger triangles weigh more.
++        let normal = (positions[b] - positions[a]).cross(positions[c] - positions[a]);
++        [a, b, c].iter().for_each(|&i| normals[i] += normal);
++    }
++    let normals: Vec<Vec3> = normals.into_iter().map(Vec3::normalize_or_zero).collect();
++    let inside: Vec<bool> = mesh
++        .playable_corners()
++        .into_iter()
++        .chain(mesh.playable.iter().copied())
++        .collect();
++    let light = appearance.light.normalize();
++    let paper = appearance.paper.to_linear();
++    let tint = view_tint(board, settings, tuning, view, appearance);
++    let colours: Vec<[f32; 4]> = heights
++        .iter()
++        .enumerate()
++        .zip(&normals)
++        .zip(&inside)
++        .map(|(((i, &h), &n), &inside)| {
++            let shade =
++                appearance.shade_floor + appearance.shade_gain * n.dot(light).max(0.) / light.y;
++            let base = tint.base.unwrap_or_else(|| appearance.ramp(h * tuning.edge_m));
++            let lit = (base * shade).mix(&tint.colours[i], tint.amounts[i]);
++            let veil = if inside { 0. } else { appearance.margin_veil };
++            lit.mix(&paper, veil).with_alpha(1.).to_f32_array()
++        })
++        .collect();
++    Mesh::new(
++        PrimitiveTopology::TriangleList,
++        RenderAssetUsages::default(),
++    )
++    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
++    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
++    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colours)
++    .with_inserted_indices(Indices::U32(
++        triangles.into_iter().flatten().map(|i| i as u32).collect(),
++    ))
++}
++
++/// The colour `view` tints the terrain with, and how strongly at each mesh
++/// point (corners, then centres), 0–1.
++fn view_tint(
++    board: &Board,
++    settings: &HexPathsSettings,
++    tuning: &HexTerrainTuning,
++    view: TerrainView,
++    appearance: &HexPathsAppearance,
++) -> Tint {
++    let terrain = &board.terrain;
++    let mesh = &terrain.mesh;
++    let points = mesh.positions.len() + mesh.tiles.len();
++    let single = |colour: Color, amounts: Vec<f32>| Tint {
++        base: None,
++        colours: vec![colour.to_linear(); points],
++        amounts,
++    };
++    match view {
++        TerrainView::Heightmap => single(Color::NONE, vec![0.; points]),
++        TerrainView::Cost => single(
++            appearance.cost,
++            corner_amounts(terrain, &steepness(board, tuning, appearance)),
++        ),
++        TerrainView::Suitability => single(
++            appearance.score,
++            tile_amounts(
++                terrain,
++                &terrain
++                    .suitability
++                    .iter()
++                    .map(|s| s.powf(settings.spread))
++                    .collect::<Vec<_>>(),
++            ),
++        ),
++        TerrainView::BenchScore => {
++            let quiet = tile_amounts(terrain, &terrain.bench_quiet);
++            let overlook = tile_amounts(terrain, &terrain.bench_overlook);
++            let (quiet_colour, overlook_colour) =
++                (appearance.quiet.to_linear(), appearance.overlook.to_linear());
++            Tint {
++                base: Some(appearance.paper.to_linear()),
++                colours: quiet
++                    .iter()
++                    .zip(&overlook)
++                    .map(|(q, o)| {
++                        let towards_overlook = o / (q + o).max(f32::EPSILON);
++                        quiet_colour.mix(&overlook_colour, towards_overlook)
++                    })
++                    .collect(),
++                amounts: quiet.iter().zip(&overlook).map(|(q, o)| (q + o).min(1.)).collect(),
++            }
++        }
++    }
++}
++
++/// Each corner's steepest edge over the levelled ground as
++/// `aversion × |rise|`, the log of the step cost, scaled so the top few
++/// percent of playable edges reach 1.
++fn steepness(
++    board: &Board,
++    tuning: &HexTerrainTuning,
++    appearance: &HexPathsAppearance,
++) -> Vec<f32> {
++    let mesh = &board.terrain.mesh;
++    let steepness: Vec<f32> = board
++        .terrain
++        .step_costs(&board.layout.heights, tuning.aversion)
++        .into_iter()
++        .map(f32::ln)
++        .collect();
++    let mut playable: Vec<f32> = steepness.iter().copied().filter(|s| s.is_finite()).collect();
++    playable.sort_by(f32::total_cmp);
++    let top = playable
++        .get(((playable.len() as f32 - 1.) * appearance.cost_percentile) as usize)
++        .copied()
++        .unwrap_or(1.)
++        .max(f32::EPSILON);
++    let mut corners = vec![0f32; mesh.positions.len()];
++    for (&[a, b], &s) in mesh.edges.iter().zip(&steepness) {
++        if s.is_finite() {
++            let amount = (s / top).min(1.);
++            corners[a] = corners[a].max(amount);
++            corners[b] = corners[b].max(amount);
++        }
++    }
++    corners
++}
++
++/// Per-point amounts from per-corner ones: centres take the mean of their
++/// corners.
++fn corner_amounts(terrain: &Terrain, corners: &[f32]) -> Vec<f32> {
++    let centres = terrain
++        .mesh
++        .tile_corners
++        .iter()
++        .map(|tile| tile.iter().map(|&c| corners[c]).sum::<f32>() / 6.);
++    corners.iter().copied().chain(centres).collect()
++}
++
++/// Per-point amounts from per-tile ones: corners take the mean of the tiles
++/// they belong to.
++fn tile_amounts(terrain: &Terrain, tiles: &[f32]) -> Vec<f32> {
++    let mesh = &terrain.mesh;
++    let mut sums = vec![(0., 0.); mesh.positions.len()];
++    for (corners, &amount) in mesh.tile_corners.iter().zip(tiles) {
++        for &c in corners {
++            sums[c].0 += amount;
++            sums[c].1 += 1.;
++        }
++    }
++    sums.into_iter()
++        .map(|(sum, count)| sum / count)
++        .chain(tiles.iter().copied())
++        .collect()
++}
+
+--- (src/screen/dev/hex_paths/terrain/erosion.rs, 0) [added]
+@@ -0,0 +1,325 @@
++//! Regional erosion (hex-lab `erosion.py`, `simulate_region`): a nearly level
++//! region, lifted against outlets on every side, carved by its own drainage.
++//! Everything here is in metres, on a square grid one cell per hex edge.
++
++use super::{
++    super::data::*,
++    height::{blur, standard_normal},
++};
++use rand::Rng;
++use std::{cmp::Ordering, collections::BinaryHeap};
++
++/// The eight neighbours, as (dx, dy), in the prototype's order.
++const NEIGHBOURS: [(isize, isize); 8] = [
++    (-1, -1),
++    (-1, 0),
++    (-1, 1),
++    (0, -1),
++    (0, 1),
++    (1, -1),
++    (1, 0),
++    (1, 1),
++];
++/// Stream-power exponent on drainage area.
++const AREA_EXPONENT: f64 = 0.5;
++/// Pits are filled to drain with this slope, in metres per cell.
++const FLOOD_EPSILON: f64 = 1e-3;
++
++/// A carved region: heights, each cell's downhill receiver, and the area
++/// draining through it. Row-major: cell `(x, y)` is `x * size + y`.
++#[derive(Debug, Clone)]
++pub struct Region {
++    pub size: usize,
++    /// Cell size, in metres.
++    pub cell: f64,
++    pub heights: Vec<f64>,
++    /// The cell water flows to; `None` at the outlets.
++    pub receiver: Vec<Option<usize>>,
++    /// Area draining through each cell, in m².
++    pub area: Vec<f64>,
++}
++
++/// What a region simulation depends on, so the last one can be reused when
++/// only the layout or the window changes.
++#[derive(Debug, Clone, PartialEq)]
++pub struct RegionKey {
++    pub seed: u64,
++    pub uplift_m: f32,
++    pub channel_ha: f32,
++    pub hexes: u32,
++    pub regional_pct: f32,
++    pub roll_m: f32,
++    pub roll_size_m: f32,
++    pub roughness_m: f32,
++    pub erodibility: f32,
++    pub iterations: u32,
++    pub creep: f32,
++    pub edge_m: f32,
++}
++
++impl RegionKey {
++    pub fn new(seed: u64, settings: &HexPathsSettings, tuning: &HexTerrainTuning) -> Self {
++        Self {
++            seed,
++            uplift_m: settings.uplift_m,
++            channel_ha: settings.channel_ha,
++            hexes: tuning.region_hexes,
++            regional_pct: tuning.regional_pct,
++            roll_m: tuning.roll_m,
++            roll_size_m: tuning.roll_size_m,
++            roughness_m: tuning.roughness_m,
++            erodibility: tuning.erodibility,
++            iterations: tuning.iterations,
++            creep: tuning.creep,
++            edge_m: tuning.edge_m,
++        }
++    }
++}
++
++/// A heap entry for the priority flood, lowest height first.
++#[derive(PartialEq)]
++struct Lowest(f64, usize);
++
++impl Eq for Lowest {}
++
++impl Ord for Lowest {
++    fn cmp(&self, other: &Self) -> Ordering {
++        other.0.total_cmp(&self.0).then(other.1.cmp(&self.1))
++    }
++}
++
++impl PartialOrd for Lowest {
++    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
++        Some(self.cmp(other))
++    }
++}
++
++impl Region {
++    /// Simulates the region for `key`. A square `1.5 × hexes` cells across:
++    /// one cell per hex edge, and hexes are 1.5 edges apart across columns.
++    pub fn simulate(key: &RegionKey, rng: &mut impl Rng) -> Self {
++        let size = (key.hexes as f64 * 1.5) as usize;
++        let cell = key.edge_m as f64;
++        let white = |rng: &mut _| (0..size * size).map(|_| standard_normal(rng)).collect::<Vec<_>>();
++        let rolls = blur(white(rng), size, size, key.roll_size_m / key.edge_m / 2.);
++        let deviation = std_dev(&rolls);
++        let rough = white(rng);
++        let mut heights: Vec<f64> = (0..size * size)
++            .map(|i| {
++                let x = (i / size) as f64 * cell;
++                x * key.regional_pct as f64 / 100.
++                    + key.roll_m as f64 * rolls[i] as f64 / deviation
++                    + key.roughness_m as f64 * rough[i] as f64
++            })
++            .collect();
++        // Drains off every side: rivers all round.
++        let outlet: Vec<bool> = (0..size * size)
++            .map(|i| {
++                let (x, y) = (i / size, i % size);
++                x == 0 || y == 0 || x == size - 1 || y == size - 1
++            })
++            .collect();
++        let mut region = Self {
++            size,
++            cell,
++            heights: Vec::new(),
++            receiver: Vec::new(),
++            area: Vec::new(),
++        };
++        for _ in 0..key.iterations {
++            for (h, &out) in heights.iter_mut().zip(&outlet) {
++                *h = if out { 0. } else { *h + key.uplift_m as f64 };
++            }
++            region.heights = region.flood(&heights, &outlet);
++            let slope = region.route(&outlet);
++            let mut carved = region.heights.clone();
++            for i in 0..size * size {
++                if outlet[i] || region.area[i] < key.channel_ha as f64 * 1e4 {
++                    continue;
++                }
++                let cut = key.erodibility as f64
++                    * (region.area[i] / 1e6).powf(AREA_EXPONENT)
++                    * (slope[i] / 0.1);
++                let floor = region.receiver[i].map_or(region.heights[i], |r| region.heights[r]);
++                carved[i] = (region.heights[i] - cut).max(floor + FLOOD_EPSILON);
++            }
++            heights = region.creep(&carved, key.creep as f64);
++            outlet
++                .iter()
++                .zip(&mut heights)
++                .filter(|(out, _)| **out)
++                .for_each(|(_, h)| *h = 0.);
++        }
++        region.heights = region.flood(&heights, &outlet);
++        region.route(&outlet);
++        region
++    }
++
++    /// Bilinear height at region cell coordinates `(x, y)`, clamped to the
++    /// region's edge.
++    pub fn sample(&self, x: f64, y: f64) -> f64 {
++        let max = (self.size - 1) as f64;
++        let (x, y) = (x.clamp(0., max), y.clamp(0., max));
++        let (x0, y0) = (x.floor() as usize, y.floor() as usize);
++        let (x1, y1) = ((x0 + 1).min(self.size - 1), (y0 + 1).min(self.size - 1));
++        let (fx, fy) = (x - x0 as f64, y - y0 as f64);
++        let h = |x: usize, y: usize| self.heights[x * self.size + y];
++        let near = h(x0, y0) * (1. - fy) + h(x0, y1) * fy;
++        let far = h(x1, y0) * (1. - fy) + h(x1, y1) * fy;
++        near * (1. - fx) + far * fx
++    }
++
++    /// Bicubic (Catmull-Rom) height at region cell coordinates, clamped to
++    /// the region's edge: smooth enough to crop a board from.
++    pub fn sample_cubic(&self, x: f64, y: f64) -> f64 {
++        let max = (self.size - 1) as isize;
++        let (x0, y0) = (x.floor(), y.floor());
++        let (fx, fy) = (x - x0, y - y0);
++        let h = |x: isize, y: isize| {
++            self.heights[x.clamp(0, max) as usize * self.size + y.clamp(0, max) as usize]
++        };
++        let weights = |t: f64| {
++            [
++                ((-t + 2.) * t - 1.) * t / 2.,
++                ((3. * t - 5.) * t * t + 2.) / 2.,
++                ((-3. * t + 4.) * t + 1.) * t / 2.,
++                (t - 1.) * t * t / 2.,
++            ]
++        };
++        let (wx, wy) = (weights(fx), weights(fy));
++        (0..4)
++            .map(|i| {
++                let row: f64 = (0..4)
++                    .map(|j| wy[j] * h(x0 as isize - 1 + i as isize, y0 as isize - 1 + j as isize))
++                    .sum();
++                wx[i] * row
++            })
++            .sum()
++    }
++
++    /// Priority flood from the outlets: every cell gets a strictly downhill
++    /// path out, by raising pits just enough (a breach, never a pond).
++    fn flood(&self, heights: &[f64], outlet: &[bool]) -> Vec<f64> {
++        let mut out = vec![f64::INFINITY; heights.len()];
++        let mut heap = BinaryHeap::new();
++        for (i, _) in outlet.iter().enumerate().filter(|(_, o)| **o) {
++            out[i] = heights[i];
++            heap.push(Lowest(heights[i], i));
++        }
++        while let Some(Lowest(h, i)) = heap.pop() {
++            for n in self.neighbours(i).map(|(n, _)| n) {
++                if out[n] == f64::INFINITY {
++                    out[n] = heights[n].max(h + FLOOD_EPSILON);
++                    heap.push(Lowest(out[n], n));
++                }
++            }
++        }
++        out
++    }
++
++    /// Steepest-descent receivers and drainage areas from the current
++    /// heights; returns each cell's slope to its receiver.
++    fn route(&mut self, outlet: &[bool]) -> Vec<f64> {
++        let cells = self.size * self.size;
++        let mut slope = vec![0.; cells];
++        let mut receiver = vec![None; cells];
++        for i in (0..cells).filter(|&i| !outlet[i]) {
++            for (n, distance) in self.neighbours(i) {
++                let drop = (self.heights[i] - self.heights[n]) / (self.cell * distance);
++                if drop > slope[i] {
++                    slope[i] = drop;
++                    receiver[i] = Some(n);
++                }
++            }
++        }
++        self.receiver = receiver;
++        // Highest first, so each cell's area is complete before it passes on.
++        let mut order: Vec<usize> = (0..cells).collect();
++        order.sort_by(|&a, &b| self.heights[b].total_cmp(&self.heights[a]));
++        self.area = vec![self.cell * self.cell; cells];
++        for i in order {
++            if let Some(r) = self.receiver[i] {
++                self.area[r] += self.area[i];
++            }
++        }
++        slope
++    }
++
++    /// Slope creep: `heights` plus `rate` × the 4-neighbour Laplacian, with
++    /// the edge repeated beyond the region.
++    fn creep(&self, heights: &[f64], rate: f64) -> Vec<f64> {
++        let size = self.size as isize;
++        let h = |x: isize, y: isize| {
++            heights[x.clamp(0, size - 1) as usize * self.size + y.clamp(0, size - 1) as usize]
++        };
++        (0..heights.len())
++            .map(|i| {
++                let (x, y) = ((i / self.size) as isize, (i % self.size) as isize);
++                let laplace = h(x - 1, y) + h(x + 1, y) + h(x, y - 1) + h(x, y + 1) - 4. * h(x, y);
++                heights[i] + rate * laplace
++            })
++            .collect()
++    }
++
++    /// Cells around `i` inside the region, with their distance in cells.
++    fn neighbours(&self, i: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
++        let (x, y) = ((i / self.size) as isize, (i % self.size) as isize);
++        NEIGHBOURS.iter().filter_map(move |&(dx, dy)| {
++            let (a, b) = (x + dx, y + dy);
++            let inside = (0..self.size as isize).contains(&a) && (0..self.size as isize).contains(&b);
++            inside.then(|| {
++                let distance = if dx != 0 && dy != 0 { std::f64::consts::SQRT_2 } else { 1. };
++                (a as usize * self.size + b as usize, distance)
++            })
++        })
++    }
++}
++
++/// Population standard deviation.
++fn std_dev(data: &[f32]) -> f64 {
++    let mean = data.iter().map(|&x| x as f64).sum::<f64>() / data.len() as f64;
++    (data.iter().map(|&x| (x as f64 - mean).powi(2)).sum::<f64>() / data.len() as f64).sqrt()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::prelude::*;
++    use rand::{SeedableRng, rngs::StdRng};
++
++    fn small() -> Region {
++        let settings = HexPathsSettings::default();
++        let tuning = HexTerrainTuning {
++            region_hexes: 24,
++            iterations: 40,
++            ..default()
++        };
++        Region::simulate(&RegionKey::new(1, &settings, &tuning), &mut StdRng::seed_from_u64(1))
++    }
++
++    #[test]
++    fn every_cell_drains_downhill_to_an_outlet() {
++        let region = small();
++        for start in 0..region.heights.len() {
++            let (mut cell, mut steps) = (start, 0);
++            while let Some(next) = region.receiver[cell] {
++                assert!(region.heights[next] < region.heights[cell]);
++                cell = next;
++                steps += 1;
++                assert!(steps <= region.heights.len());
++            }
++            let (x, y) = (cell / region.size, cell % region.size);
++            assert!(x == 0 || y == 0 || x == region.size - 1 || y == region.size - 1);
++        }
++    }
++
++    #[test]
++    fn drainage_area_grows_downstream() {
++        let region = small();
++        for (cell, receiver) in region.receiver.iter().enumerate() {
++            if let Some(r) = receiver {
++                assert!(region.area[*r] > region.area[cell]);
++            }
++        }
++    }
++}
+
+--- (src/screen/dev/hex_paths/terrain/height.rs, 0) [added]
+@@ -0,0 +1,66 @@
++use crate::prelude::*;
++use rand::{Rng, RngExt};
++use std::f32::consts::TAU;
++
++/// Fine height raster the corners are sampled from; also used for line of
++/// sight. Stored column-major: `data[x * height + y]`.
++#[derive(Debug, Clone)]
++pub struct Raster {
++    pub origin: Vec2,
++    /// Cells per hex edge length.
++    pub res: f32,
++    pub width: usize,
++    pub height: usize,
++    pub data: Vec<f32>,
++}
++
++impl Raster {
++    /// Bilinear height at `point`, clamped to the raster's edge.
++    pub fn sample(&self, point: Vec2) -> f32 {
++        let at = ((point - self.origin) * self.res)
++            .clamp(Vec2::ZERO, Vec2::new(self.width as f32 - 1., self.height as f32 - 1.));
++        let (x0, y0) = (at.x.floor() as usize, at.y.floor() as usize);
++        let (x1, y1) = ((x0 + 1).min(self.width - 1), (y0 + 1).min(self.height - 1));
++        let (fx, fy) = (at.x.fract(), at.y.fract());
++        let cell = |x: usize, y: usize| self.data[x * self.height + y];
++        let near = cell(x0, y0) * (1. - fy) + cell(x0, y1) * fy;
++        let far = cell(x1, y0) * (1. - fy) + cell(x1, y1) * fy;
++        near * (1. - fx) + far * fx
++    }
++}
++
++/// Separable Gaussian blur that wraps at the edges, truncated at 4 sigma.
++pub fn blur(data: Vec<f32>, width: usize, height: usize, sigma: f32) -> Vec<f32> {
++    let radius = (4. * sigma + 0.5) as isize;
++    let kernel: Vec<f32> = (-radius..=radius)
++        .map(|i| (-(i * i) as f32 / (2. * sigma * sigma)).exp())
++        .collect();
++    let sum: f32 = kernel.iter().sum();
++    let pass = |data: &[f32], stride: usize, len: usize, lines: usize, step: usize| {
++        let mut out = vec![0.; data.len()];
++        for line in 0..lines {
++            for i in 0..len {
++                out[line * step + i * stride] = kernel
++                    .iter()
++                    .enumerate()
++                    .map(|(k, w)| {
++                        let j = (i as isize + k as isize - radius).rem_euclid(len as isize);
++                        w * data[line * step + j as usize * stride]
++                    })
++                    .sum::<f32>()
++                    / sum;
++            }
++        }
++        out
++    };
++    // Along y within each column, then along x within each row.
++    let columns = pass(&data, 1, height, width, height);
++    pass(&columns, height, width, height, 1)
++}
++
++/// A standard normal sample, by Box–Muller.
++pub fn standard_normal(rng: &mut impl Rng) -> f32 {
++    let u: f32 = 1. - rng.random::<f32>();
++    let v: f32 = rng.random();
++    (-2. * u.ln()).sqrt() * (TAU * v).cos()
++}
+
+--- (src/screen/dev/hex_paths/terrain/mesh.rs, 0) [added]
+@@ -0,0 +1,235 @@
++use super::SQRT_3;
++use crate::prelude::*;
++use bevy::platform::collections::HashMap;
++use hexx::{Hex, HexLayout, HexOrientation, OffsetHexMode};
++
++const OFFSET_MODE: OffsetHexMode = OffsetHexMode::Even;
++
++/// Tiles and their shared corners, in hex edge lengths. Only playable tiles
++/// take pads and trails; the margin around them is scenery.
++#[derive(Debug, Clone)]
++pub struct HexMesh {
++    pub tiles: Vec<Hex>,
++    pub centers: Vec<Vec2>,
++    /// Each tile's corners, as indices into `positions`.
++    pub tile_corners: Vec<[usize; 6]>,
++    pub positions: Vec<Vec2>,
++    pub playable: Vec<bool>,
++    /// Distance from each tile centre to the playable board's edge, in hexes:
++    /// 0.5 for a playable tile on the edge, negative in the margin.
++    pub border_distance: Vec<f32>,
++    /// Tile index of each hex.
++    pub index: HashMap<Hex, usize>,
++    /// The honeycomb: tile sides as corner pairs, lowest index first.
++    pub edges: Vec<[usize; 2]>,
++    /// Edges between playable corners; only these take trails.
++    pub playable_edges: Vec<bool>,
++    /// Each edge's index, by its corners (lowest first).
++    pub edge_index: HashMap<[usize; 2], usize>,
++    /// Each corner's edges, as (other corner, edge).
++    pub corner_edges: Vec<Vec<(usize, usize)>>,
++}
++
++impl HexMesh {
++    /// A `columns` × `rows` playable board, even-q offset, inside `margin`
++    /// extra tiles of scenery on every side.
++    pub fn build(columns: u32, rows: u32, margin: u32) -> Self {
++        let layout = HexLayout::flat();
++        let mut keys = HashMap::<(i32, i32), usize>::default();
++        let mut mesh = Self {
++            tiles: Vec::new(),
++            centers: Vec::new(),
++            tile_corners: Vec::new(),
++            positions: Vec::new(),
++            playable: Vec::new(),
++            border_distance: Vec::new(),
++            index: HashMap::default(),
++            edges: Vec::new(),
++            playable_edges: Vec::new(),
++            edge_index: HashMap::default(),
++            corner_edges: Vec::new(),
++        };
++        for column in 0..columns + 2 * margin {
++            for row in 0..rows + 2 * margin {
++                let hex = Hex::from_offset_coordinates(
++                    [column as i32, row as i32],
++                    OFFSET_MODE,
++                    HexOrientation::Flat,
++                );
++                // Corners lie on a lattice, so rounding identifies shared ones.
++                let corners = layout.hex_corners(hex).map(|corner| {
++                    let key = (
++                        (2. * corner.x).round() as i32,
++                        (2. * corner.y / SQRT_3).round() as i32,
++                    );
++                    *keys.entry(key).or_insert_with(|| {
++                        mesh.positions.push(corner);
++                        mesh.positions.len() - 1
++                    })
++                });
++                mesh.index.insert(hex, mesh.tiles.len());
++                mesh.tiles.push(hex);
++                mesh.centers.push(layout.hex_to_world_pos(hex));
++                mesh.tile_corners.push(corners);
++                mesh.playable.push(
++                    (margin..margin + columns).contains(&column)
++                        && (margin..margin + rows).contains(&row),
++                );
++                let (c, r) = (column as i32 - margin as i32, row as i32 - margin as i32);
++                let edge = [c, columns as i32 - 1 - c, r, rows as i32 - 1 - r];
++                mesh.border_distance
++                    .push(edge.into_iter().min().unwrap_or(0) as f32 + 0.5);
++            }
++        }
++        let mut edges: Vec<[usize; 2]> = mesh
++            .tile_corners
++            .iter()
++            .flat_map(|corners| {
++                (0..6).map(move |i| {
++                    let (a, b) = (corners[i], corners[(i + 1) % 6]);
++                    [a.min(b), a.max(b)]
++                })
++            })
++            .collect();
++        edges.sort();
++        edges.dedup();
++        let inside = mesh.playable_corners();
++        mesh.playable_edges = edges.iter().map(|&[a, b]| inside[a] && inside[b]).collect();
++        mesh.corner_edges = vec![Vec::new(); mesh.positions.len()];
++        for (e, &[a, b]) in edges.iter().enumerate() {
++            mesh.edge_index.insert([a, b], e);
++            mesh.corner_edges[a].push((b, e));
++            mesh.corner_edges[b].push((a, e));
++        }
++        mesh.edges = edges;
++        mesh
++    }
++
++    /// The tile at playable offset coordinates `column`, `row`; negative or
++    /// past the board reaches into the margin.
++    pub fn tile_at(&self, column: i32, row: i32, margin: u32) -> Option<usize> {
++        let hex = Hex::from_offset_coordinates(
++            [column + margin as i32, row + margin as i32],
++            OFFSET_MODE,
++            HexOrientation::Flat,
++        );
++        self.index.get(&hex).copied()
++    }
++
++    /// The tile `point` lies in, which is also the tile with the nearest
++    /// centre; `None` off the mesh.
++    pub fn tile_containing(&self, point: Vec2) -> Option<usize> {
++        self.index.get(&HexLayout::flat().world_pos_to_hex(point)).copied()
++    }
++
++    /// The edge between corners `a` and `b`, if they are neighbours.
++    pub fn edge(&self, a: usize, b: usize) -> Option<usize> {
++        self.edge_index.get(&[a.min(b), a.max(b)]).copied()
++    }
++
++    /// The six edges round `tile`, in corner order: edge `i` joins corners
++    /// `i - 1` and `i`.
++    pub fn perimeter(&self, tile: usize) -> [usize; 6] {
++        let corners = self.tile_corners[tile];
++        std::array::from_fn(|i| {
++            self.edge(corners[(i + 5) % 6], corners[i])
++                .expect("a tile's consecutive corners share an edge")
++        })
++    }
++
++    /// The side two neighbouring tiles share.
++    pub fn shared_side(&self, a: usize, b: usize) -> Option<usize> {
++        let shared: Vec<usize> = self.tile_corners[a]
++            .into_iter()
++            .filter(|c| self.tile_corners[b].contains(c))
++            .collect();
++        match shared[..] {
++            [x, y] => self.edge(x, y),
++            _ => None,
++        }
++    }
++
++    /// Tiles sharing a side with `tile`.
++    pub fn neighbours(&self, tile: usize) -> impl Iterator<Item = usize> + '_ {
++        self.tiles[tile]
++            .all_neighbors()
++            .into_iter()
++            .filter_map(|hex| self.index.get(&hex).copied())
++    }
++
++    /// Playable tiles at least one tile in from the playable edge.
++    pub fn interior(&self) -> Vec<bool> {
++        self.border_distance.iter().map(|&d| d >= 1.5).collect()
++    }
++
++    /// Whether each corner belongs to a playable tile.
++    pub fn playable_corners(&self) -> Vec<bool> {
++        let mut inside = vec![false; self.positions.len()];
++        self.tile_corners
++            .iter()
++            .zip(&self.playable)
++            .filter(|(_, playable)| **playable)
++            .flat_map(|(corners, _)| corners)
++            .for_each(|&corner| inside[corner] = true);
++        inside
++    }
++
++    /// Each tile as 6 triangles around its centre. Indices count corners
++    /// first, then centres.
++    pub fn triangles(&self) -> impl Iterator<Item = [usize; 3]> + '_ {
++        let first_centre = self.positions.len();
++        self.tile_corners
++            .iter()
++            .enumerate()
++            .flat_map(move |(tile, corners)| {
++                (0..6).map(move |i| [first_centre + tile, corners[i], corners[(i + 1) % 6]])
++            })
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn neighbouring_tiles_share_corners() {
++        let mesh = HexMesh::build(4, 3, 2);
++        let mut tiles_per_corner = vec![0; mesh.positions.len()];
++        for corners in &mesh.tile_corners {
++            let mut distinct = corners.to_vec();
++            distinct.sort();
++            distinct.dedup();
++            assert_eq!(distinct.len(), 6);
++            corners.iter().for_each(|&c| tiles_per_corner[c] += 1);
++        }
++        assert!(tiles_per_corner.iter().all(|&n| (1..=3).contains(&n)));
++        assert!(tiles_per_corner.contains(&3));
++    }
++
++    #[test]
++    fn edges_form_a_honeycomb() {
++        let mesh = HexMesh::build(4, 3, 2);
++        let mut degree = vec![0; mesh.positions.len()];
++        for &[a, b] in &mesh.edges {
++            degree[a] += 1;
++            degree[b] += 1;
++        }
++        assert!(degree.iter().all(|&d| (2..=3).contains(&d)));
++        assert!(mesh.playable_edges.contains(&true));
++    }
++
++    #[test]
++    fn playable_tiles_are_inside_the_margin() {
++        let mesh = HexMesh::build(4, 3, 2);
++        assert_eq!(mesh.playable.iter().filter(|&&p| p).count(), 12);
++        let inside = mesh.playable_corners();
++        let (min, max) = mesh
++            .positions
++            .iter()
++            .fold((Vec2::MAX, Vec2::MIN), |(lo, hi), &p| (lo.min(p), hi.max(p)));
++        for (position, _) in mesh.positions.iter().zip(&inside).filter(|(_, i)| **i) {
++            assert!(position.x > min.x + 1. && position.x < max.x - 1.);
++            assert!(position.y > min.y + 1. && position.y < max.y - 1.);
++        }
++    }
++}
+
+--- (src/screen/dev/hex_paths/terrain/mod.rs, 0) [added]
+@@ -0,0 +1,180 @@
++//! The terrain layer: everything the terrain seed decides, ported from the
++//! hex-lab prototype (`misc/hex-lab/src/hexlab/erosion.py`, `layout.py`'s
++//! `Ground`). See `.docs/designs/quell-hex-terrain-r11-design.md`. Pure data:
++//! no ECS. The layout over it is in `super::layout`.
++
++use super::data::*;
++use crate::prelude::*;
++use rand::Rng;
++
++/// √3, until `f32::consts::SQRT_3` is stable.
++pub const SQRT_3: f32 = 1.732_050_8;
++
++pub mod erosion;
++mod height;
++mod mesh;
++pub mod sites;
++pub mod window;
++
++use erosion::Region;
++use height::Raster;
++pub use mesh::HexMesh;
++use window::{Creeks, Features, Window};
++
++/// The ground: a window into an eroded region, its creeks, and how it suits
++/// pads. Never edited after generation; pads level a copy (the model layer).
++#[derive(Debug, Clone)]
++pub struct Terrain {
++    pub mesh: HexMesh,
++    /// Height of each corner, in hex edge lengths.
++    pub heights: Vec<f32>,
++    pub creeks: Creeks,
++    /// What the window was chosen for.
++    pub features: Features,
++    /// How buildable each tile is, 0–1.
++    pub suitability: Vec<f32>,
++    /// The quiet share of each tile's bench score: how enclosed it is,
++    /// sharpened and weighted by `1 - view`.
++    pub bench_quiet: Vec<f32>,
++    /// The overlook share of each tile's bench score: how far it looks down
++    /// on its surroundings, sharpened and weighted by `view`.
++    pub bench_overlook: Vec<f32>,
++}
++
++impl Terrain {
++    /// The terrain for `settings`, cropped from `region` (simulated for the
++    /// same seed and settings).
++    pub fn generate(
++        settings: &HexPathsSettings,
++        tuning: &HexTerrainTuning,
++        region: &Region,
++        rng: &mut impl Rng,
++    ) -> Result<Self, &'static str> {
++        let mesh = HexMesh::build(settings.columns, settings.rows, tuning.margin);
++        let Window {
++            raster,
++            creeks,
++            features,
++        } = Window::choose(&mesh, region, settings, tuning, rng)?;
++        let heights: Vec<f32> = mesh.positions.iter().map(|&p| raster.sample(p)).collect();
++        let suitability = sites::suitability(&mesh, &heights);
++        let (open, overlook) = sites::views(
++            &mesh,
++            &raster,
++            tuning.view_radius,
++            tuning.edges(tuning.eye_m),
++            tuning.edges(tuning.overlook_m),
++        );
++        let enclosed: Vec<f32> = open.iter().map(|o| 1. - o).collect();
++        let quiet = sites::rank(&enclosed, &mesh.playable);
++        let overlook = sites::rank(&overlook, &mesh.playable);
++        // Sharpened so only the most enclosed spots and the best overlooks
++        // score well, not ground that is middling at both.
++        let share = |ranks: Vec<f32>, weight: f32| -> Vec<f32> {
++            ranks
++                .into_iter()
++                .map(|r| weight * r.powf(tuning.bench_sharpness))
++                .collect()
++        };
++        Ok(Self {
++            bench_quiet: share(quiet, 1. - settings.view),
++            bench_overlook: share(overlook, settings.view),
++            mesh,
++            heights,
++            creeks,
++            features,
++            suitability,
++        })
++    }
++
++    /// The bench score of each tile: quiet plus overlook.
++    pub fn bench_score(&self) -> Vec<f32> {
++        self.bench_quiet
++            .iter()
++            .zip(&self.bench_overlook)
++            .map(|(q, o)| q + o)
++            .collect()
++    }
++
++    /// Walking cost of each edge over `heights` by Tobler's hiking function,
++    /// `exp(aversion × |rise|)`; infinite off the playable board.
++    pub fn step_costs(&self, heights: &[f32], aversion: f32) -> Vec<f32> {
++        self.mesh
++            .edges
++            .iter()
++            .zip(&self.mesh.playable_edges)
++            .map(|(&[a, b], &playable)| {
++                if playable {
++                    (aversion * (heights[a] - heights[b]).abs()).exp()
++                } else {
++                    f32::INFINITY
++                }
++            })
++            .collect()
++    }
++
++    /// Edges a creek runs across: the side shared by each creek tile and the
++    /// tile downstream of it. Trails may cross these only at crossings.
++    pub fn creek_sides(&self) -> Vec<usize> {
++        self.creeks
++            .downstream
++            .iter()
++            .enumerate()
++            .filter_map(|(t, below)| below.and_then(|n| self.mesh.shared_side(t, n)))
++            .collect()
++    }
++}
++
++/// Height of every mesh point over corner `heights`: corners, then tile
++/// centres at the mean of their corners.
++pub fn point_heights(mesh: &HexMesh, heights: &[f32]) -> Vec<f32> {
++    let centres = mesh
++        .tile_corners
++        .iter()
++        .map(|corners| corners.iter().map(|&c| heights[c]).sum::<f32>() / 6.);
++    heights.iter().copied().chain(centres).collect()
++}
++
++/// World position of a mesh point at `height`: the hex plane is XZ, up is Y.
++pub fn world(point: Vec2, height: f32) -> Vec3 {
++    Vec3::new(point.x, height, -point.y)
++}
++
++#[cfg(test)]
++pub(super) mod tests {
++    use super::{erosion::RegionKey, *};
++    use rand::{SeedableRng, rngs::StdRng};
++
++    /// A small board quick enough for debug-build tests.
++    pub fn small(seed: u64) -> (HexPathsSettings, HexTerrainTuning, Terrain) {
++        // A smaller region grows smaller creeks, so the threshold is lower.
++        let settings = HexPathsSettings {
++            columns: 12,
++            rows: 12,
++            creek_ha: 15.,
++            ..default()
++        };
++        let tuning = HexTerrainTuning {
++            region_hexes: 60,
++            iterations: 150,
++            candidates: 12,
++            margin: 4,
++            ..default()
++        };
++        let region = Region::simulate(&RegionKey::new(seed, &settings, &tuning), &mut StdRng::seed_from_u64(seed));
++        let terrain = Terrain::generate(&settings, &tuning, &region, &mut StdRng::seed_from_u64(seed))
++            .expect("the board fits the region");
++        (settings, tuning, terrain)
++    }
++
++    #[test]
++    fn steps_cost_more_uphill_and_nothing_off_the_board() {
++        let (_, tuning, terrain) = small(3);
++        let costs = terrain.step_costs(&terrain.heights, tuning.aversion);
++        let flat = terrain.step_costs(&vec![0.; terrain.heights.len()], tuning.aversion);
++        for ((cost, flat_cost), &playable) in costs.iter().zip(flat).zip(&terrain.mesh.playable_edges) {
++            assert_eq!(cost.is_finite(), playable);
++            assert!(!playable || (*cost >= 1. && flat_cost == 1.));
++        }
++    }
++}
+
+--- (src/screen/dev/hex_paths/terrain/sites.rs, 0) [added]
+@@ -0,0 +1,144 @@
++use super::{HexMesh, Raster, SQRT_3};
++use crate::prelude::*;
++use rand::{Rng, RngExt};
++
++/// How buildable each tile is: a low height range over it and its
++/// neighbours, as `exp(-range / median playable range)`.
++pub fn suitability(mesh: &HexMesh, heights: &[f32]) -> Vec<f32> {
++    let ranges: Vec<f32> = (0..mesh.tiles.len())
++        .map(|tile| {
++            let (low, high) = std::iter::once(tile)
++                .chain(mesh.neighbours(tile))
++                .flat_map(|t| mesh.tile_corners[t])
++                .map(|c| heights[c])
++                .fold((f32::MAX, f32::MIN), |(lo, hi), h| (lo.min(h), hi.max(h)));
++            high - low
++        })
++        .collect();
++    let playable: Vec<f32> = ranges
++        .iter()
++        .zip(&mesh.playable)
++        .filter(|(_, playable)| **playable)
++        .map(|(range, _)| *range)
++        .collect();
++    let median = median(playable).max(f32::EPSILON);
++    ranges.iter().map(|range| (-range / median).exp()).collect()
++}
++
++/// Per playable tile, over tiles within `radius` hexes seen from `eye` above
++/// the ground: the fraction visible (open, not enclosed), and the fraction
++/// visible *and* lower, counting fully at `drop` below (an overlook, not just
++/// a plain). Looks past the board's edge. Zero for margin tiles.
++pub fn views(mesh: &HexMesh, raster: &Raster, radius: f32, eye: f32, drop: f32) -> (Vec<f32>, Vec<f32>) {
++    let ground: Vec<f32> = mesh.centers.iter().map(|&c| raster.sample(c)).collect();
++    let mut open = vec![0.; mesh.tiles.len()];
++    let mut overlook = vec![0.; mesh.tiles.len()];
++    for tile in (0..mesh.tiles.len()).filter(|&t| mesh.playable[t]) {
++        let (from, eye) = (mesh.centers[tile], ground[tile] + eye);
++        let (mut count, mut seen_count, mut lower) = (0., 0., 0.);
++        for other in (0..mesh.tiles.len()).filter(|&o| {
++            o != tile && mesh.centers[o].distance(from) <= radius * SQRT_3
++        }) {
++            let to = mesh.centers[other];
++            // Sight line to the ground at the other tile's centre.
++            let seen = (1..17).map(|k| k as f32 / 17.).all(|f| {
++                raster.sample(from + (to - from) * f) <= eye + (ground[other] - eye) * f + 1e-6
++            });
++            count += 1.;
++            if seen {
++                seen_count += 1.;
++                lower += ((ground[tile] - ground[other]) / drop).clamp(0., 1.);
++            }
++        }
++        if count > 0. {
++            open[tile] = seen_count / count;
++            overlook[tile] = lower / count;
++        }
++    }
++    (open, overlook)
++}
++
++/// Each value's rank among the tiles in `among`, scaled to 0..=1; zero
++/// elsewhere. Ranking only playable tiles keeps the margin, which has no
++/// views, from crowding the bottom of the scale.
++pub fn rank(values: &[f32], among: &[bool]) -> Vec<f32> {
++    let mut order: Vec<usize> = (0..values.len()).filter(|&i| among[i]).collect();
++    order.sort_by(|&a, &b| values[a].total_cmp(&values[b]));
++    let scale = (order.len().max(2) - 1) as f32;
++    let mut ranks = vec![0.; values.len()];
++    for (rank, index) in order.into_iter().enumerate() {
++        ranks[index] = rank as f32 / scale;
++    }
++    ranks
++}
++
++/// Where [`place`] may put a node, besides the interior and away from other
++/// pads.
++#[derive(Default)]
++pub struct Constraints<'a> {
++    /// Tiles never used.
++    pub forbid: Option<&'a [bool]>,
++    /// Tiles used only while possible (bench spacing).
++    pub room: Option<&'a [bool]>,
++    /// Only tiles in this annulus round a tile (min, max hexes), while
++    /// possible.
++    pub near: Option<(usize, Vec2)>,
++}
++
++/// One weighted farthest-point pick: the tile maximising
++/// distance-to-nearest-pad × score. The playable edge counts as a pad at half
++/// the distance, so sites don't crowd the border. Sites keep `spacing` hexes
++/// apart, then `room` and `near` relax if nothing fits; `forbid` never does,
++/// and no pick lands on a pad. `None` when no tile is left.
++pub fn place(
++    mesh: &HexMesh,
++    taken: &[usize],
++    score: &[f32],
++    spacing: f32,
++    constraints: &Constraints,
++    rng: &mut impl Rng,
++) -> Option<usize> {
++    let interior = mesh.interior();
++    let allowed = |t: usize| interior[t] && !constraints.forbid.is_some_and(|f| f[t]);
++    let near = |t: usize| {
++        constraints.near.is_none_or(|(tile, range)| {
++            let apart = mesh.centers[t].distance(mesh.centers[tile]) / SQRT_3;
++            (range.x..=range.y).contains(&apart)
++        })
++    };
++    let distance: Vec<f32> = (0..mesh.tiles.len())
++        .map(|t| {
++            taken
++                .iter()
++                .map(|&p| mesh.centers[t].distance(mesh.centers[p]) / SQRT_3)
++                .fold(f32::INFINITY, f32::min)
++                .min(2. * mesh.border_distance[t])
++        })
++        .collect();
++    let jitter: Vec<f32> = distance.iter().map(|_| rng.random_range(0.9..1.0)).collect();
++    let spaced = |t: usize| distance[t] >= spacing && constraints.room.is_none_or(|r| r[t]);
++    let free = |t: usize| distance[t] > 0.;
++    let tiers: [&dyn Fn(usize) -> bool; 3] = [
++        &|t| allowed(t) && near(t) && spaced(t) && free(t),
++        &|t| allowed(t) && near(t) && free(t),
++        &|t| allowed(t) && free(t),
++    ];
++    tiers.iter().find_map(|tier| {
++        (0..mesh.tiles.len())
++            .filter(|&t| tier(t))
++            .max_by(|&a, &b| {
++                let s = |t: usize| distance[t] * score[t] * jitter[t];
++                s(a).total_cmp(&s(b))
++            })
++    })
++}
++
++/// Middle value; the mean of the middle two for an even count.
++fn median(mut values: Vec<f32>) -> f32 {
++    values.sort_by(f32::total_cmp);
++    match values.len() {
++        0 => 0.,
++        n if n % 2 == 1 => values[n / 2],
++        n => (values[n / 2 - 1] + values[n / 2]) / 2.,
++    }
++}
+
+--- (src/screen/dev/hex_paths/terrain/window.rs, 0) [added]
+@@ -0,0 +1,366 @@
++//! Choosing the board's window into a simulated region (hex-lab `erosion.py`:
++//! `crop`, `trace`, `window_features`): random windows are ranked by the
++//! features play needs, and the best is cropped into the board raster.
++
++use super::{super::data::*, HexMesh, Raster, SQRT_3, erosion::Region};
++use crate::prelude::*;
++use bevy::platform::collections::HashMap;
++use rand::{Rng, RngExt};
++use std::f32::consts::TAU;
++
++/// Points sampled along each natural tease's sight line.
++const SIGHT_SAMPLES: usize = 12;
++
++/// The chosen window: the board's raster and creeks, and what ranked it.
++#[derive(Debug, Clone)]
++pub struct Window {
++    /// Heights in edge lengths.
++    pub raster: Raster,
++    /// Creeks, per tile: the most water draining through it, in hectares (0
++    /// off the creeks), and the tile downstream.
++    pub creeks: Creeks,
++    pub features: Features,
++}
++
++/// Creeks on the tiles' dual lattice: tile centre to tile centre.
++#[derive(Debug, Clone, Default)]
++pub struct Creeks {
++    pub flow_ha: Vec<f32>,
++    pub downstream: Vec<Option<usize>>,
++}
++
++impl Creeks {
++    /// Whether `tile` is on a creek.
++    pub fn on(&self, tile: usize) -> bool {
++        self.flow_ha[tile] > 0.
++    }
++
++    /// The main creek's threshold: half the biggest flow in the board's
++    /// interior. Crossings and fords go only on it.
++    pub fn main_ha(&self, mesh: &HexMesh) -> f32 {
++        let interior = mesh.interior();
++        let biggest = (0..mesh.tiles.len())
++            .filter(|&t| interior[t] && self.on(t))
++            .map(|t| self.flow_ha[t])
++            .fold(0., f32::max);
++        if biggest > 0. { biggest / 2. } else { f32::INFINITY }
++    }
++}
++
++/// What a window was ranked on.
++#[derive(Debug, Clone, Default)]
++pub struct Features {
++    pub score: f32,
++    pub creek_tiles: usize,
++    /// Ford sites: main-creek tiles with low banks, kept apart.
++    pub fords: usize,
++    /// Natural tease spots: viewers that see a tile well below.
++    pub tease_viewers: usize,
++    pub relief_m: f32,
++}
++
++/// Where a window sits in the region: board points map to region cells by
++/// rotating about the board's middle and moving it to `centre`. One region
++/// cell is one hex edge, so there is no scaling.
++#[derive(Debug, Clone, Copy)]
++struct Frame {
++    middle: Vec2,
++    centre: Vec2,
++    rotation: Mat2,
++}
++
++impl Frame {
++    fn to_region(self, point: Vec2) -> Vec2 {
++        self.centre + self.rotation * (point - self.middle)
++    }
++
++    fn to_board(self, cell: Vec2) -> Vec2 {
++        self.middle + self.rotation.transpose() * (cell - self.centre)
++    }
++
++    /// Region height at board `point`, in metres.
++    fn height(&self, region: &Region, point: Vec2) -> f32 {
++        let at = self.to_region(point);
++        region.sample(at.x as f64, at.y as f64) as f32
++    }
++}
++
++/// Sight lines between interior tiles 3–6 hexes apart: each (viewer,
++/// target) and points along the line between.
++struct SightLines {
++    pairs: Vec<(usize, usize)>,
++    points: Vec<[Vec2; SIGHT_SAMPLES]>,
++}
++
++impl SightLines {
++    fn new(mesh: &HexMesh) -> Self {
++        let interior = mesh.interior();
++        let tiles: Vec<usize> = (0..mesh.tiles.len()).filter(|&t| interior[t]).collect();
++        let mut lines = Self {
++            pairs: Vec::new(),
++            points: Vec::new(),
++        };
++        for &v in &tiles {
++            for &t in &tiles {
++                let (a, b) = (mesh.centers[v], mesh.centers[t]);
++                if (3. ..=6.).contains(&(a.distance(b) / SQRT_3)) {
++                    lines.pairs.push((v, t));
++                    lines.points.push(std::array::from_fn(|k| {
++                        a + (b - a) * (k + 1) as f32 / (SIGHT_SAMPLES + 1) as f32
++                    }));
++                }
++            }
++        }
++        lines
++    }
++}
++
++impl Window {
++    /// Ranks `tuning.candidates` random windows into `region`, anywhere far
++    /// enough from its edges, at random rotations; crops the best.
++    pub fn choose(
++        mesh: &HexMesh,
++        region: &Region,
++        settings: &HexPathsSettings,
++        tuning: &HexTerrainTuning,
++        rng: &mut impl Rng,
++    ) -> Result<Self, &'static str> {
++        let (min, max) = mesh
++            .positions
++            .iter()
++            .fold((Vec2::MAX, Vec2::MIN), |(lo, hi), &p| (lo.min(p), hi.max(p)));
++        let (origin, extent) = (min - 2., max + 4. - min);
++        let middle = origin + extent / 2.;
++        let radius = extent.length() / 2. + 2.;
++        let far_edge = region.size as f32 - 1. - radius;
++        if far_edge <= radius {
++            return Err("the board doesn't fit in the simulated region");
++        }
++        let lines = SightLines::new(mesh);
++        let mut best: Option<(Window, Frame)> = None;
++        for _ in 0..tuning.candidates {
++            let frame = Frame {
++                middle,
++                centre: Vec2::new(rng.random_range(radius..far_edge), rng.random_range(radius..far_edge)),
++                rotation: Mat2::from_angle(rng.random_range(0. ..TAU)),
++            };
++            let creeks = trace(mesh, region, settings.creek_ha, &frame, (origin, extent));
++            let window = rank(mesh, region, creeks, &frame, tuning, &lines);
++            if best.as_ref().is_none_or(|(b, _)| window.features.score > b.features.score) {
++                best = Some((window, frame));
++            }
++        }
++        let (mut window, frame) = best.expect("at least one candidate");
++        let size = (extent * tuning.resolution).ceil();
++        let (width, height) = (size.x as usize, size.y as usize);
++        let data = (0..width * height)
++            .map(|i| {
++                let point = origin + Vec2::new((i / height) as f32, (i % height) as f32) / tuning.resolution;
++                let at = frame.to_region(point);
++                region.sample_cubic(at.x as f64, at.y as f64) as f32 / tuning.edge_m
++            })
++            .collect();
++        window.raster = Raster {
++            origin,
++            res: tuning.resolution,
++            width,
++            height,
++            data,
++        };
++        Ok(window)
++    }
++}
++
++/// Creeks on the tiles, from the region's channels draining at least
++/// `creek_ha`: each channel cell inside `window` (origin, extent) maps to the
++/// tile it falls in, and a creek tile's downstream is the next tile along its
++/// channel. The one definition of the board's creeks, for both window choice
++/// and play.
++///
++/// Unlike hex-lab's nearest-tile lookup, cells and gap-fill points that fall
++/// outside every hex (the jagged outer edge of the margin) are skipped. A
++/// link there may join tiles that aren't neighbours, and then closes no side;
++/// that only happens in the outer margin, which takes no trails.
++fn trace(
++    mesh: &HexMesh,
++    region: &Region,
++    creek_ha: f32,
++    frame: &Frame,
++    (origin, extent): (Vec2, Vec2),
++) -> Creeks {
++    let mut flow_ha = vec![0f32; mesh.tiles.len()];
++    let mut downstream = vec![None; mesh.tiles.len()];
++    let size = region.size;
++    let cells: Vec<usize> = (0..size * size)
++        .filter(|&i| region.area[i] >= creek_ha as f64 * 1e4)
++        .collect();
++    let mut tile_of = HashMap::<usize, usize>::default();
++    for &i in &cells {
++        let point = frame.to_board(Vec2::new((i / size) as f32, (i % size) as f32));
++        let inside = point.cmpge(origin).all() && point.cmple(origin + extent).all();
++        if let Some(tile) = mesh.tile_containing(point).filter(|_| inside) {
++            tile_of.insert(i, tile);
++        }
++    }
++    for &i in cells.iter().filter(|i| tile_of.contains_key(*i)) {
++        let tile = tile_of[&i];
++        flow_ha[tile] = flow_ha[tile].max((region.area[i] / 1e4) as f32);
++        // Follow the channel down to the next tile.
++        let mut next = region.receiver[i];
++        while let Some(j) = next.filter(|j| tile_of.get(j) == Some(&tile)) {
++            next = region.receiver[j];
++        }
++        if let Some(&below) = next.and_then(|j| tile_of.get(&j))
++            && downstream[tile].is_none()
++        {
++            downstream[tile] = Some(below);
++        }
++    }
++    // A channel passing near a hex corner can skip a tile between two cells;
++    // fill such gaps with the tiles along the straight line, so every creek
++    // link joins neighbouring tiles (and closes exactly one side).
++    let linked: Vec<usize> = (0..mesh.tiles.len()).filter(|&t| downstream[t].is_some()).collect();
++    for t in linked {
++        let Some(n) = downstream[t] else { continue };
++        let (a, b) = (mesh.centers[t], mesh.centers[n]);
++        if a.distance(b) <= SQRT_3 + 1e-4 {
++            continue;
++        }
++        let mut chain = vec![t];
++        for k in 1..8 {
++            if let Some(between) = mesh.tile_containing(a + (b - a) * k as f32 / 8.)
++                && between != n
++                && chain.last() != Some(&between)
++            {
++                chain.push(between);
++            }
++        }
++        chain.push(n);
++        for pair in chain.windows(2) {
++            downstream[pair[0]] = Some(pair[1]);
++            flow_ha[pair[1]] = flow_ha[pair[1]].max(flow_ha[t]);
++        }
++    }
++    Creeks {
++        flow_ha,
++        downstream,
++    }
++}
++
++/// Scores one candidate window on its creeks, main-creek fords, natural
++/// teases, rivers and relief. The raster is left empty until chosen.
++fn rank(
++    mesh: &HexMesh,
++    region: &Region,
++    creeks: Creeks,
++    frame: &Frame,
++    tuning: &HexTerrainTuning,
++    lines: &SightLines,
++) -> Window {
++    let w = &tuning.window;
++    let centre_m: Vec<f32> = mesh.centers.iter().map(|&c| frame.height(region, c)).collect();
++    let corner_m: Vec<f32> = mesh.positions.iter().map(|&p| frame.height(region, p)).collect();
++    let interior = mesh.interior();
++    let creek: Vec<bool> = (0..mesh.tiles.len()).map(|t| creeks.on(t) && mesh.playable[t]).collect();
++    let (low, high) = mesh
++        .tile_corners
++        .iter()
++        .zip(&mesh.playable)
++        .filter(|(_, playable)| **playable)
++        .flat_map(|(corners, _)| corners)
++        .fold((f32::MAX, f32::MIN), |(lo, hi), &c| (lo.min(corner_m[c]), hi.max(corner_m[c])));
++    let relief = high - low;
++    let bank: Vec<f32> = mesh.tile_corners.iter().map(|c| bank_span(c.map(|c| corner_m[c]))).collect();
++    let main = creeks.main_ha(mesh);
++    let mut sites: Vec<usize> = (0..mesh.tiles.len())
++        .filter(|&t| creek[t] && interior[t] && creeks.flow_ha[t] >= main && bank[t] <= w.ford_bank_m)
++        .collect();
++    sites.sort_by(|&a, &b| bank[a].total_cmp(&bank[b]));
++    let mut fords: Vec<usize> = Vec::new();
++    for t in sites {
++        let spaced = |f: &usize| mesh.centers[t].distance(mesh.centers[*f]) >= w.ford_spacing * SQRT_3;
++        if fords.iter().all(spaced) {
++            fords.push(t);
++        }
++    }
++    // Natural teases: viewer sees target, at least `tease_drop_m` lower.
++    let mut drops: Vec<(f32, usize, usize)> = lines
++        .pairs
++        .iter()
++        .zip(&lines.points)
++        .filter_map(|(&(v, t), points)| {
++            let drop = centre_m[v] - centre_m[t];
++            let (eye, goal) = (centre_m[v] + tuning.eye_m, centre_m[t] + tuning.landmark_m);
++            let clear = points.iter().enumerate().all(|(k, &p)| {
++                let f = (k + 1) as f32 / (SIGHT_SAMPLES + 1) as f32;
++                frame.height(region, p) <= eye + (goal - eye) * f + 1e-6
++            });
++            (drop >= w.tease_drop_m && clear).then_some((drop, v, t))
++        })
++        .collect();
++    drops.sort_by(|a, b| b.0.total_cmp(&a.0));
++    let mut teases = Vec::new();
++    let mut used = Vec::new();
++    for (_, v, t) in drops {
++        if !used.contains(&v) && !used.contains(&t) {
++            teases.push((v, t));
++            used.extend([v, t]);
++        }
++    }
++    let creek_tiles = creek.iter().filter(|&&c| c).count();
++    let biggest = (0..mesh.tiles.len())
++        .filter(|&t| creek[t])
++        .map(|t| creeks.flow_ha[t])
++        .fold(0., f32::max);
++    let full = |count: f32, wanted: f32| (count / wanted).min(1.);
++    let score = w.creek * full(creek_tiles as f32, w.creek_tiles)
++        + w.fords * full(fords.len() as f32, w.fords_wanted)
++        + w.teases * full(teases.len() as f32, w.viewers)
++        + w.relief * if (w.relief_m.x..=w.relief_m.y).contains(&relief) { 1. } else { 0. }
++        - w.river * if biggest > w.river_ha { 1. } else { 0. };
++    Window {
++        raster: Raster {
++            origin: Vec2::ZERO,
++            res: 1.,
++            width: 0,
++            height: 0,
++            data: Vec::new(),
++        },
++        creeks,
++        features: Features {
++            score,
++            creek_tiles,
++            fords: fords.len(),
++            tease_viewers: teases.len(),
++            relief_m: relief,
++        },
++    }
++}
++
++/// How steep a creek tile's banks are: the height span of its corners.
++pub fn bank_span(corners: [f32; 6]) -> f32 {
++    let (low, high) = corners
++        .iter()
++        .fold((f32::MAX, f32::MIN), |(lo, hi), &h| (lo.min(h), hi.max(h)));
++    high - low
++}
++
++#[cfg(test)]
++mod tests {
++    use super::super::tests::small;
++
++    #[test]
++    fn creek_links_join_neighbouring_tiles() {
++        let (_, _, terrain) = small(2);
++        let (mesh, creeks) = (&terrain.mesh, &terrain.creeks);
++        let mut links = 0;
++        for (t, below) in creeks.downstream.iter().enumerate() {
++            if let Some(n) = below {
++                links += 1;
++                assert!(mesh.neighbours(t).any(|x| x == *n));
++                assert!(creeks.on(t) && creeks.on(*n));
++            }
++        }
++        assert!(links > 0, "a ranked window has creeks");
++    }
++}
+
+--- (src/screen/dev/hex_paths/test.rs, 0) [added]
+@@ -0,0 +1,120 @@
++use super::{data::*, screen, systems};
++use crate::prelude::*;
++use bevy::ecs::schedule::ScheduleLabel;
++use q_test_harness::prelude::{AppExt as _, InputTestPlugin};
++use std::time::Duration;
++
++/// Exercises board replacement without rendering or UI.
++struct Fixture {
++    app: App,
++}
++
++impl Fixture {
++    fn new() -> Self {
++        let mut app = App::new();
++        app.add_plugins((MinimalPlugins, InputTestPlugin))
++            .insert_resource(HexPathsSettings {
++                seed: Some(7),
++                columns: 12,
++                rows: 12,
++                ..default()
++            })
++            // A small region, quick enough for debug builds.
++            .insert_resource(HexTerrainTuning {
++                region_hexes: 50,
++                iterations: 120,
++                candidates: 8,
++                margin: 4,
++                ..default()
++            })
++            .init_resource::<PanelState>()
++            .init_resource::<RegionCache>()
++            .init_resource::<HexPathsView>()
++            .add_systems(
++                Update,
++                systems::spawn_board.run_if(resource_changed::<HexPathsSettings>),
++            );
++        app.finish();
++        app.cleanup();
++        let mut fixture = Self { app };
++        fixture.tick();
++        fixture
++    }
++
++    fn tick(&mut self) {
++        self.app
++            .step(Duration::ZERO, [Update.intern(), PostUpdate.intern()]);
++    }
++
++    fn assert_board_present(&mut self) {
++        let world = self.app.world_mut();
++        assert!(world.contains_resource::<Board>());
++        assert!(world.resource::<BoardStats>().error.is_none());
++        assert_eq!(
++            world
++                .query_filtered::<Entity, With<BoardRoot>>()
++                .iter(world)
++                .count(),
++            1
++        );
++    }
++}
++
++#[test]
++fn invalid_settings_clear_the_board_and_valid_settings_restore_it() {
++    let mut fixture = Fixture::new();
++    fixture.assert_board_present();
++    fixture
++        .app
++        .world_mut()
++        .resource_mut::<HexPathsSettings>()
++        .columns = 0;
++    fixture.tick();
++    let world = fixture.app.world_mut();
++    assert!(!world.contains_resource::<Board>());
++    assert!(world.resource::<BoardStats>().error.is_some());
++    assert_eq!(
++        world
++            .query_filtered::<Entity, With<BoardRoot>>()
++            .iter(world)
++            .count(),
++        0
++    );
++
++    fixture
++        .app
++        .world_mut()
++        .resource_mut::<HexPathsSettings>()
++        .columns = 10;
++    fixture.tick();
++    fixture.assert_board_present();
++}
++
++#[test]
++fn leaving_the_screen_restores_the_ui_cameras_clear_color() {
++    let mut fixture = Fixture::new();
++    let color = Color::srgb(0.2, 0.3, 0.4);
++    let clear_color = ClearColorConfig::Custom(color);
++    let camera = fixture
++        .app
++        .world_mut()
++        .spawn(Camera {
++            clear_color: ClearColorConfig::None,
++            ..default()
++        })
++        .id();
++    let world = fixture.app.world_mut();
++    world.insert_resource(UiCameraState {
++        entity: camera,
++        clear_color,
++    });
++    world.run_system_cached(screen::unload).unwrap();
++    let ClearColorConfig::Custom(restored) = world.get::<Camera>(camera).unwrap().clear_color
++    else {
++        panic!("the previous custom clear color should be restored");
++    };
++    assert_eq!(restored, color);
++    assert!(!world.contains_resource::<UiCameraState>());
++    assert!(!world.contains_resource::<Board>());
++    assert!(!world.contains_resource::<BoardStats>());
++}
+
+--- (src/screen/dev/mod.rs, 1) [modified]
+@@ -1,13 +1,16 @@
+ mod camera_test;
+ mod greybox_arena;
++mod hex_paths;
+ use crate::prelude::*;
+ 
+ pub mod prelude {
+     pub use super::camera_test::prelude::*;
+     pub use super::greybox_arena::prelude::*;
++    pub use super::hex_paths::prelude::*;
+ }
+ 
+ pub fn plugin(app: &mut App) {
+     app.add_plugins(camera_test::plugin);
+     app.add_plugins(greybox_arena::plugin);
++    app.add_plugins(hex_paths::plugin);
+ }
+
