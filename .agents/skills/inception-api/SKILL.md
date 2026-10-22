@@ -1,0 +1,104 @@
+---
+name: inception-api
+description: Using the local INCEpTION 42.1 annotation server (note-lab's labelling tool) through its AERO remote API — auth via netrc, what the API can and cannot do (no layer/tagset endpoints), configuring layers via the layer-JSON import (misc/note-lab/inception/layers.json), the docker compose setup and its project-name trap, and data-handling rules for exports that contain book texts. Use when scripting INCEpTION (projects, documents, annotations, curation, export/import), changing the labelling schema, or touching the INCEpTION container.
+---
+
+# INCEpTION remote API
+
+The labelling tool for `misc/note-lab` (see `misc/note-lab/methods.typ` §10 for
+the project setup and `guide.typ` for the labeller's side). Docs:
+[user guide](https://inception-project.github.io/releases/42.1/docs/user-guide.html),
+[admin guide, remote API](https://inception-project.github.io/releases/42.1/docs/admin-guide.html#sect_remote_api).
+
+## Instance
+
+- URL `http://localhost:8687`; API base `/api/aero/v1` (AERO protocol).
+- Docker Compose file `/opt/labeller/inception.compose.yml` (services `app`,
+  `db`; volumes `inception_app-data` → `/export`, `inception_db-data`).
+  **Always pass `-p inception`**: the stack was first started from another
+  directory, so without it Compose names the project `labeller` and starts on
+  fresh, empty volumes. Check before recreating:
+  `docker compose -p inception -f /opt/labeller/inception.compose.yml config --hash app`
+  should equal the running container's `com.docker.compose.config-hash` label.
+- `/opt/labeller` isn't writable by `ada` but the file is group-writable:
+  edit by writing into the file (`cat new > file`), not `sed -i`.
+- Remote API is enabled by `JAVA_OPTS=-Dremote-api.enabled=true` in the `app`
+  environment (the image's own `JAVA_OPTS` is empty). Other `settings.properties`
+  keys can be passed the same way. Recreate only the app:
+  `docker compose -p inception -f /opt/labeller/inception.compose.yml up -d --no-deps app`.
+
+## Auth
+
+User `remote-api` (ROLE_USER + ROLE_REMOTE + ROLE_ADMIN). Credentials live in
+`~/.config/inception-remote.netrc` (mode 600). Never print, cat or echo it; never
+put the password on a command line.
+
+```sh
+N=~/.config/inception-remote.netrc
+curl -s --netrc-file $N http://localhost:8687/api/aero/v1/projects
+```
+
+HTTP basic works only under `/api/...`. `/swagger-ui.html` and `/v3/api-docs`
+redirect to the web login, so the spec is only readable in a logged-in browser.
+For anything not listed below, read the controllers at tag `inception-42.1`
+(`inception/inception-remote/src/main/java/.../remoteapi/{aero,next}/*Controller.java`)
+via `gh api repos/inception-project/inception/contents/<path>?ref=inception-42.1
+-H 'Accept: application/vnd.github.raw'`.
+
+## What the API covers
+
+Verified against the 42.1 controllers: projects (list, create, delete,
+`POST /projects/import` multipart `file` with `createMissingUsers` /
+`importPermissions`, export as zip with optional secondary `format`), documents
+(list, upload, download, delete), per-user annotations (get, upload, delete),
+curation (get, upload, delete), permissions, project users, knowledge bases,
+background tasks and bulk prediction. Projects and documents are addressed by
+numeric id or slug.
+
+**Not covered: layers, features, tagsets, recommenders, guidelines, workload.**
+Those are UI-only.
+
+Knowledge bases: `GET /projects/{p}/kbs` lists them (project 1 has one local KB,
+`test`). `POST /projects/{p}/kbs/{kbId}/sparql` and `POST /projects/{p}/sparql`
+take a SPARQL **SELECT** query in the body and are read-only; KB contents are
+edited on the Knowledge Base page or by importing RDF in the KB settings.
+
+## Changing the schema
+
+The schema is `misc/note-lab/inception/layers.json`: an array of
+`ExportedAnnotationLayer` (format of `LayerImportExportUtils.importLayerFile`),
+tagsets inline on each feature. Apply it in the UI: project → Settings → Layers
+→ Import. Import updates layers that already exist by name, so it's safe to
+re-import after editing. Keep the file in sync with `methods.typ` §10 and
+`guide.typ` §3.
+
+Format notes (from the 42.1 source):
+- Layer `type`: `span`, `relation`, `document-metadata`. Custom names are
+  `webanno.custom.<Name>`, ASCII only (the UIMA type name is fixed at creation).
+- Enums are read by **constant name**, case-insensitive: `anchoring_mode`
+  `TOKENS`/`SENTENCES`/`CHARACTERS`/`SINGLE_TOKEN`; `overlap_mode`
+  `ANY_OVERLAP`/…; `validation_mode` `ALWAYS`/`NEVER`; `link_mode`
+  `NONE`/`SIMPLE`/`WITH_ROLE`; `multi_value_mode` `NONE`/`ARRAY`.
+- Relation layers set `attach_type: {"name": <span layer>}` in the same file;
+  `Governor`/`Dependent` are added automatically. One relation layer per span
+  layer.
+- Feature `type`: `uima.cas.String`, `uima.cas.Boolean`, `uima.cas.Integer`, or
+  a layer name for a link feature. Link features also need `multi_value_mode:
+  ARRAY`, `link_mode: WITH_ROLE`, `link_type_name: <layer><Feature>Link`, role
+  feature `role`, target feature `target`.
+- `traits` is a JSON **string**: e.g. `{"editorType":"RADIOGROUP"}`,
+  `{"multipleRows":true,"dynamicSize":true}`, `{"enableRoleLabels":false}`.
+- KB concept feature: `type` `kb:<ANY>` (or `kb:<root IRI>` to scope it;
+  `kb-multi:` for multi-valued), `traits` `{"allowedValueType":"ANY_OBJECT"}`
+  (`CONCEPT`/`INSTANCE` also valid) plus optional `repositoryId` to bind one
+  KB; leave it out when the project has a single KB. Values are stored as IRI
+  strings.
+- `visible` = show the value in the span's label (defaults to false).
+
+## Data handling
+
+Projects hold excerpts of published books. **Never commit, publish or copy
+project exports, document downloads or CAS files into the repo**; the
+auto-mode permission check also blocks exporting them. Work that needs text
+(e.g. the converter) runs on files the user provides. Layer JSON and tagsets
+contain no text and are fine to commit.
