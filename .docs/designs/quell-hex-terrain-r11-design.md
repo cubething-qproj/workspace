@@ -4,9 +4,9 @@ Status: **Round 11, 2026-10-13. Python experiments settled. Next: re-plan the
 Rust port against this.**
 
 This document consolidates rounds 1–10 into the current algorithm:
-- `quell-hex-terrain-design.md` covers rounds 1–9: the original terrain-first
+- `retired/quell-hex-terrain-design.md` covers rounds 1–9: the original terrain-first
   generator and the round-9 port changes;
-- `quell-hex-layout-design.md` covers round 10: layers, pins, Fear and
+- `retired/quell-hex-layout-design.md` covers round 10: layers, pins, Fear and
   lostness.
 
 Where they disagree, this document wins.
@@ -292,7 +292,7 @@ world: there's no fog.
   crossings pinned.
 - **Not needed:** escarpment raising and route noise.
 
-Re-plan `.docs/plans/quell-hex-terrain-plan.md` from here.
+Re-plan `.docs/plans/done/quell-hex-terrain-plan.md` from here.
 
 ## Open questions
 

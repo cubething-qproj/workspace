@@ -2,7 +2,7 @@
 
 Status: **draft, 2026-10-16. For review.**
 
-Follows the hex terrain work (`quell-hex-terrain-design.md`) and the async
+Follows the hex terrain work (`retired/quell-hex-terrain-design.md`) and the async
 generation issue (`.docs/issues/quell-worldgen-0-async.md`). The
 `hex_paths` screen becomes the level **editor**; `WorldScreen` becomes the
 place where levels are **played**. The greybox scene stays with its own
@@ -159,7 +159,7 @@ The player roams freely, off-path included. Movement is restricted by
 
 - **Steep drops**: slopes beyond the controller's walkable limit. The
   controller already refuses them, so the terrain does this work. Escarpments
-  (`quell-hex-terrain-design.md` §4) are the deliberate case.
+  (`retired/quell-hex-terrain-design.md` §4) are the deliberate case.
 - **Creek banks**: steep everywhere except at shallow sections. Crossings
   sit at those sections; `trunk_sites` already prefers low-bank sites.
   So creeks are largely impassable, except where it would be natural to

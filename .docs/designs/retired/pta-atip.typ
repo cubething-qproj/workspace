@@ -1,3 +1,4 @@
+// Superseded by ../pta-atip-algorithm.typ
 #set heading(numbering: "1.")
 
 = Ontology <ontology>

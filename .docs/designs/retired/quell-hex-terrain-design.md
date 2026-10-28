@@ -1,3 +1,5 @@
+> Superseded by [`quell-hex-terrain-r11-design.md`](../quell-hex-terrain-r11-design.md).
+
 # Quell hex terrain: terrain-first trail generation
 
 Status: **Round 9, 2026-10-12. Being ported to Rust on `feat/hex-paths`.
@@ -119,7 +121,7 @@ are indices: 0 is spawn and 1–9 are nodes. Steps 3–6 show nodes untyped
 
 ### 1. Heightmap
 
-![heightmap](quell-hex-terrain/01-heightmap.png)
+![heightmap](../quell-hex-terrain/01-heightmap.png)
 
 Fractal noise sampled at every corner, over the board *and* its margin:
 
@@ -135,7 +137,7 @@ difference along an edge.
 
 ### 2. Ease of travel
 
-![cost](quell-hex-terrain/02-cost.png)
+![cost](../quell-hex-terrain/02-cost.png)
 
 Each edge costs `exp(3.5 × |Δh|)`, a symmetric form of [Tobler's hiking
 function.](https://en.wikipedia.org/wiki/Tobler's_hiking_function) Flat ground
@@ -144,7 +146,7 @@ never impassable. Darker red means costlier.
 
 ### 3. Node sites
 
-![node sites](quell-hex-terrain/03-node-sites.png)
+![node sites](../quell-hex-terrain/03-node-sites.png)
 
 **Suitability** measures how buildable a tile is: `exp(−range / median range)`,
 where `range` is the height range over the tile and its 6 neighbours. The fog
@@ -164,7 +166,7 @@ distance to nearest placed pad × suitability ^ spread
 
 ### 4. Teases: escarpments, then levelling
 
-![levelled](quell-hex-terrain/04-levelled.png)
+![levelled](../quell-hex-terrain/04-levelled.png)
 
 A tease is a **viewer** node that can see a **target** node a long way round on
 foot. The target will be typed a POI (§7). The drop-off between them is an
@@ -211,7 +213,7 @@ becomes a terrace with a graded apron and a step where the grading ends.
 
 ### 5. Which nodes to join
 
-![graph](quell-hex-terrain/05-graph.png)
+![graph](../quell-hex-terrain/05-graph.png)
 
 **Greedy spanner.**
 1. Compute the **direct cost** between every pair of pads (spawn included):
@@ -239,7 +241,7 @@ regardless, so softlock is impossible.
 
 ### 6. Loops
 
-![trails](quell-hex-terrain/06-trails.png)
+![trails](../quell-hex-terrain/06-trails.png)
 
 "On a loop" means two separate ways, sharing no trail corner, from the pad to
 some other node. Two exits that merge a step later don't count.
@@ -286,7 +288,7 @@ target, and 2 found no loop that passed every check.
 
 ### 7. Typing
 
-![types](quell-hex-terrain/07-types.png)
+![types](../quell-hex-terrain/07-types.png)
 
 Nodes are typed by where they ended up:
 1. **Spurs** and **tease targets** are POIs.
@@ -309,7 +311,7 @@ benches. It no longer moves where nodes are placed.
 
 ### 8. Teases
 
-![teases](quell-hex-terrain/08-teases.png)
+![teases](../quell-hex-terrain/08-teases.png)
 
 Each arrow points from viewer to target, labelled with walk ÷ crow-fly. Here
 node 9 looks down at the NPC (3.8 ×), and node 4 at node 1 (3.5 ×). A failing
@@ -317,7 +319,7 @@ tease would be grey and labelled "hidden" or "met late".
 
 ### 9. Smoothed
 
-![smoothed](quell-hex-terrain/09-smoothed.png)
+![smoothed](../quell-hex-terrain/09-smoothed.png)
 
 How the final output might look. Trails are split into runs between junctions
 and pads. Each run is relaxed (4 passes of neighbour averaging, which removes
@@ -360,18 +362,18 @@ Internal constants:
 
 ### Terrain knobs
 
-![terrain knobs](quell-hex-terrain/10-terrain-knobs.png)
+![terrain knobs](../quell-hex-terrain/10-terrain-knobs.png)
 
 Each row varies one knob at 18 × 15 (7 nodes), with everything else at
 defaults, drawn in the final style.
 
 ### Network knobs
 
-![network knobs](quell-hex-terrain/11-network-knobs.png)
+![network knobs](../quell-hex-terrain/11-network-knobs.png)
 
 ### How much terrain to change
 
-![tease height](quell-hex-terrain/13-tease-height.png)
+![tease height](../quell-hex-terrain/13-tease-height.png)
 
 The same board at three `tease_height` ranges. `(0, 0)` changes no terrain for
 teases; only pads are graded. Measured in round 5, averaged over seeds 1–12:
@@ -388,7 +390,7 @@ knob, to be judged in 3D.
 
 ### Gallery
 
-![gallery](quell-hex-terrain/12-gallery.png)
+![gallery](../quell-hex-terrain/12-gallery.png)
 
 30 × 26, 14 nodes, final style.
 

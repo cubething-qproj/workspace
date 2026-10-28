@@ -1,3 +1,5 @@
+> Superseded by [`q_query_lang design.md`](../done/q_query_lang%20design.md).
+
 # q_fs grammar semantics (v0)
 
 Status: **normative companion** to [`grammar.ebnf`](grammar.ebnf). The ABNF

@@ -1,3 +1,5 @@
+> Superseded by [`quell-hex-terrain-r11-design.md`](../quell-hex-terrain-r11-design.md).
+
 # Quell hex terrain, round 10: terrain and layout layers
 
 Status: **Round 10, superseded by round 11 (`quell-hex-terrain-r11-design.md`), 2026-10-13.** Kept for the experiment record.

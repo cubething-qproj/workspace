@@ -1,13 +1,13 @@
 ---
 name: pta-atip
-description: Classifying an argument with Wagemans' Argument Type Identification Procedure (ATIP v6) into a Periodic Table of Arguments (PTA v3.1) type — the six steps (label elements, canonicalize to "conclusion because premise", form alpha/beta/gamma/delta, substance, lever, name), the lever tables, the 50 type symbols, and the record format note-lab uses for comparing model and human labels. Use when labelling the scheme of an inference, assigning a PTA code like "α FF Cau", checking or explaining a PTA classification, or auto-labelling argument relations in note-lab.
+description: Classifying an argument with Wagemans' Argument Type Identification Procedure (ATIP v6) into a Periodic Table of Arguments (PTA v3.1) type — the six steps (label elements, canonicalize to "conclusion because premise", form alpha/beta/gamma/delta, substance, lever, name), the lever tables, the 50 type symbols, and the record format the lab uses for comparing model and human labels. Use when labelling the scheme of an inference, assigning a PTA code like "α FF Cau", checking or explaining a PTA classification, or auto-labelling connectors in the PTA lab (misc/labs/nlp).
 ---
 
 # PTA argument typing (ATIP v6)
 
 Source: Wagemans, J.H.M. (2026). *Argument Type Identification Procedure
 (ATIP) – Version 6*, aligned with PTA 3.1. Local copy:
-`.docs/notes/Wagemans2026-ArgumentTypeIdentificationProcedureATIP-Version6.pdf`.
+`.docs/reference/Wagemans2026-ArgumentTypeIdentificationProcedureATIP-Version6.pdf`.
 Worked examples of all 50 types: <https://www.periodic-table-of-arguments.org/pta-3-1-clickable>.
 The full type table is in [types.md](types.md).
 
@@ -25,11 +25,16 @@ One argument = one **conclusion**, one **premise** and a **lever**. The lever
 is a third statement linking them, almost always implicit. Each statement has
 a **subject** (what it is about) and a **predicate** (what is said of it).
 
-In note-lab terms: one `inference` edge of `ArgumentRelation`, governor =
-premise, dependent = conclusion. `conflict` and `rephrase` edges are not typed.
-ATIP covers single premise–conclusion pairs only. For linked premises (edges
-sharing a `group`), analyse each edge separately and say in `notes` that the
-premise only works jointly; this is our convention, not ATIP's.
+In the lab's INCEpTION schema: one `Connector` span, whose links name its
+`conclusion`, `premise` and (only if the text states or argues about it)
+`lever statement`, all `Statement` spans. Its `form`, `substance` and `lever`
+features hold the result, `conclusion subject`, `conclusion predicate`,
+`premise subject` and `premise predicate` the canonical form (a, X, b, Y in
+the lever templates; for delta q, A/U, q, Z), `transformations` the wording
+changes as `kind (statement)` tags, once each and unordered, and `concepts`
+the concepts it is about (`concept` or `concept/sense`). ATIP covers single premise–conclusion pairs
+only; a premise that works only jointly with another is noted in `notes`
+(our convention, not ATIP's).
 
 ## Part I. Standardization
 
@@ -55,7 +60,7 @@ content" here and resolved in step 2.
 
 Target: **"conclusion because premise"**, more precisely
 "subject-predicate because subject-predicate". Apply as many of these as
-needed and record each, in order:
+needed:
 
 - transposition (put the conclusion first)
 - addition of "because"
@@ -68,6 +73,15 @@ needed and record each, in order:
 
 The aim of anaphora resolution and passivization is to make shared elements
 *literally* shared, because step 3 depends on it.
+
+Record the result the way the gold labels do: the four canonical terms
+(conclusion subject and predicate, premise subject and predicate), and, as
+`kind (statement)` tags, only the transformations that changed a term's
+wording: `anaphora`, `explication`, `illocution substitution`,
+`passivization`, `activization`, `nominalisation` (ours), `same term` (two
+different wordings judged one term, ours), each with `(conclusion)` or
+`(premise)`. Once each, in any order. Transposition, "because" and omitted
+markers aren't recorded: the roles and markers already show them.
 
 ## Part II. Characterization
 
@@ -212,13 +226,14 @@ elements:            # step 1
   conclusion: …
   premise: …
   markers: [{text: "so", kind: coherence}, …]
-canonical: <conclusion> because <premise>
-transformations:     # step 2, in order applied
-  - substitution of "so" by "because"
+canonical:           # step 2, the same four fields as the gold labels
+  conclusion: {subject: …, predicate: …}
+  premise:    {subject: …, predicate: …}
+transformations: ["anaphora (premise)"]   # kind (statement), once each, unordered
 form: alpha          # step 3
 substance: VF        # step 4, conclusion first
 lever: Y is the DEFINITION of X   # step 5
-lever_instance: <the lever written out with this argument's terms>
+lever_instance: <the lever template filled with the canonical terms; rendered, not labelled>
 type: argument from definition (Def)   # step 6
 code: α VF Def
 confidence: high | medium | low
@@ -244,6 +259,6 @@ notes: <implicit material added, ambiguities, joint premises>
 
 ## Data handling
 
-Records quote the source text. note-lab sources are excerpts of published
+Records quote the source text. lab sources are excerpts of published
 books: never commit records containing `original`, `elements` or `canonical`
 text to the repo (see the `inception-api` skill).

@@ -32,6 +32,10 @@ most of the data; a long tag list mostly goes unused.
 
 ### PTA dimensions
 
+> **Outdated.** This describes the pre-3.1 PTA (36 types, labels like `1 pre FF`).
+> PTA 3.1 / ATIP v6 uses forms α/β/γ/δ and 50 types: see the `pta-atip` skill
+> and `.docs/designs/pta-atip-algorithm.typ`.
+
 - **Order:** first-order (premise bears on the standpoint directly) or
   second-order (bears on the acceptability of another statement, e.g. via a
   source).

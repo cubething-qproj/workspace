@@ -1,3 +1,5 @@
+> Superseded by [`quell-hex-terrain-r11-design.md`](../quell-hex-terrain-r11-design.md) (generators, via `quell-hex-terrain-design.md`). The screen and walking shipped in quell #49 and #51.
+
 # Quell hex paths prototype design
 
 Status: **Approved by Ada on 2026-10-09. Implementation proceeds one step at a time.**

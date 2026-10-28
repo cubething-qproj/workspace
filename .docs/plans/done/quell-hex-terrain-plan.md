@@ -1,7 +1,7 @@
 # Quell hex terrain: implementation plan
 
 Ports the terrain-first generator from
-[the design](../designs/quell-hex-terrain-design.md) into
+[the design](../designs/retired/quell-hex-terrain-design.md) into
 `bin/quell/src/screen/dev/hex_paths/` on `feat/hex-paths`. History stays
 linear and each step below is one commit. The reference implementation is
 `misc/hex-lab/src/hexlab/terrain.py`; Rust follows its names and order so the

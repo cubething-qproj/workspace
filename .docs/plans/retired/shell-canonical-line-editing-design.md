@@ -1,3 +1,5 @@
+> Superseded by [q_term #33](https://github.com/cubething-qproj/q_term/issues/33). Line editing moved to the q_term line discipline; q_shell #7 was closed as not planned.
+
 # Canonical line editing for q_shell
 
 Date: 2026-09-22

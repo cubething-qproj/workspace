@@ -28,11 +28,11 @@ syntax specification or implementation plan.
 
 Read these before changing the language or its execution substrate:
 
-1. `docs/q_os design.md`
-2. `docs/handoffs/ordinary-system-job-model-design.md`
-3. `docs/handoffs/ordinary-system-job-model-handoff.md`
-4. `docs/plans/process-terminal-io-bridge-plan.md`
-5. `docs/plans/shell-registered-program-dispatch-design.md`
+1. `.docs/designs/q_os design.md`
+2. `.docs/handoffs/done/ordinary-system-job-model-design.md`
+3. `.docs/handoffs/done/ordinary-system-job-model-handoff.md`
+4. `.docs/plans/done/process-terminal-io-bridge-plan.md`
+5. `.docs/plans/done/shell-registered-program-dispatch-design.md`
 
 The ordinary-system job model is the accepted execution direction. Where older
 q_shell research or pre-design notes assume per-invocation `SystemId` dispatch,

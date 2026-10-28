@@ -51,14 +51,21 @@ the type argument from cause. @types lists all 50 types.
 
 In scope:
 - Typing one argument, a single premise → conclusion pair, with a code, plus a
-  confidence and the runner-up codes. These three fields are the *output
-  record*.
+  confidence and the runner-up codes, and the canonical terms and
+  transformations it was typed from. These fields are the *output record*;
+  it has the same shape as the gold labels (@gold).
 - Measuring each part of the procedure against human labels.
 - The shape of the output that the game consumes.
 
+This automates the Initial Analysis of CAPNA, the Comprehensive Assessment
+Procedure for Natural Argumentation (Hinton and Wagemans 2023, @references):
+find an argument and type it with ATIP. Its later stages (process, reasoning,
+language) evaluate the typed argument, with questions that depend on the type
+("is a SIMILAR to b?").
+
 Out of scope:
 - Judging whether an argument is _good_. That is a later step that reads this
-  one's output.
+  one's output: CAPNA's process, reasoning and language stages.
 - How the game uses the output: deciding which of its keys an argument unlocks
   (sketched in @in-game only as an interface).
 - Explication of missing premises in free text (see @risks). In the lab,
@@ -84,8 +91,9 @@ a particular model with a particular configuration.] in the lab (rule baseline,
 embedding model, NLI model, …). Every statistical
 judgement is localised, named and testable on its own.
 
-There are eight oracles, $O_1$ to $O_8$. Each is introduced at the step that
-uses it, and @oracles summarises them. The whole pipeline, with deterministic
+There are ten oracles, $O_1$ to $O_10$. Each is introduced at the step that
+uses it, and @oracles summarises them. $O_9$ is the exception to the closed-set
+rule: it generates candidate rewordings (@rewriting). The whole pipeline, with deterministic
 steps as
 #text(fill: blue.darken(20%))[*blue rectangles*] and oracles as
 #text(fill: orange.darken(20%))[*yellow hexagons*]:
@@ -97,6 +105,7 @@ flowchart TD
   s3 --> s4["4 · substance"] --> s5["5 · lever"] --> s6["6 · name"] --> out(["code distribution"])
   O1{{"O1 spans"}} -.-> s1
   O2{{"O2 sameness<br/>(used again in 3)"}} -.-> s2
+  O9{{"O9 · O10 rewrites"}} -.-> s2
   O5{{"O5 delta?"}} -.-> s3
   O3{{"O3 · O4 · O6 · O7"}} -.-> s4
   O8{{"O8 lever"}} -.-> s5
@@ -104,25 +113,81 @@ flowchart TD
   classDef oracle fill:#fde68a,stroke:#b45309
   classDef io fill:#e5e7eb,stroke:#374151
   class s1,s2,s3,s4,s5,s6 det
-  class O1,O2,O5,O3,O8 oracle
+  class O1,O2,O9,O5,O3,O8 oracle
   class in,out io
 ```
 ]
 
 == Input <input>
 
-An argument is $a = (c, rho, "ctx")$: the conclusion $c$, the premise $rho$
-(rho, for "reason") and the surrounding text $"ctx"$. $c$ and $rho$ are spans of
-text.
+=== The argument graph <graph>
 
-- *Lab:* arguments come from INCEpTION, the annotation tool. Labellers mark
-  argumentative spans and draw relations between them on an `Argument
-  relation` layer. An `inference` relation runs from the premise span (the
-  relation's _governor_) to the conclusion span (its _dependent_); each such
-  edge is one argument. A premise the labeller reconstructed rather than found
-  in the text is a zero-width span flagged `reconstructed`, with its wording in
-  the span's `note`. Premises that support a conclusion only jointly share a
-  `group` id; we type each of their edges separately and flag it as linked.
+A text is a graph with two kinds of node:
+
+- *statements* $S$: anything that can be a conclusion, a premise or a lever;
+- *connectors* $K$: one per PTA argument (one triad).
+
+A connector $k in K$ is defined by three role relations from statements to
+connectors:
+
+$ C, P, L subset.eq S times K $
+
+$(s, k) in C$ reads "$s$ is the conclusion of $k$", and likewise $P$ for
+premise and $L$ for lever. Each connector has *exactly one* conclusion and
+*exactly one* premise, and *at most one* lever statement:
+
+$ |C^(-1)(k)| = |P^(-1)(k)| = 1, quad |L^(-1)(k)| <= 1 quad "for every" k in K $
+
+A statement has no role of its own: its roles are the edges it takes part in,
+and it can take part in any number of them. The same statement can be the
+premise of one connector and the conclusion of another, which is what lets
+arguments nest.
+
+Formally, a connector stands for an entailment relation: what goes into it
+entails its conclusion. When a conclusion $C$ rests on two premises $A$ and
+$B$ jointly, the fair reading is $A and B models C$: one entailment, "$C$
+because $A$ and $B$", by lever $L$. It is not two entailments, $A models C$
+and $B models C$, since neither premise does the work alone. The cardinality
+above, exactly one premise, can't express this: two connectors would assert
+the two separate entailments, which is a different claim. How joint premises
+fit the graph is open.
+
+#fig(60%)[
+```mermaid
+flowchart BT
+  p1["premise"] -- P --> k1((k₁)) -- C --> c1["conclusion"]
+  l1["lever"] -- L --> k1
+  p2["premise"] -- P --> k2((k₂)) -- C --> p1
+  classDef stmt fill:#e5e7eb,stroke:#374151
+  classDef conn fill:#fde68a,stroke:#b45309
+  class p1,c1,l1,p2 stmt
+  class k1,k2 conn
+```
+]
+
+This is the shape of the Argument Interchange Format (AIF; see @references): statements are its information nodes and
+connectors its inference nodes. The PTA adds the lever as a third kind of
+input.
+
+The lever is usually implicit. A connector then has no lever statement, and
+its lever is only the keyword chosen in step 5. A lever gets a statement node
+when the text states it or argues about it; an attack on an inference is then
+an attack on its lever statement.
+
+An argument, the unit the pipeline types, is one connector read off the graph:
+$a = (c, rho, "ctx")$ with $c$ the conclusion of $k$, $rho$ (rho, for
+"reason") its premise and $"ctx"$ the surrounding text. $c$ and $rho$ are
+spans of text.
+
+=== Sources
+
+- *Lab:* the graph is labelled in INCEpTION, the annotation tool, on two span
+  layers. `Statement` spans are the statements. A `Connector` span is a
+  connector, anchored on the coherence marker ("because", "so") where there
+  is one; it has three link features, `conclusion`, `premise` and `lever
+  statement`, each pointing at `Statement` spans. A statement that is implicit
+  in the text is a zero-width span with its wording in `note`. INCEpTION can't
+  enforce the cardinalities above, so the converter checks them.
 - *Game:* $c$ and $rho$ come from an extra oracle over the player's line and the
   dialogue so far (@in-game).
 
@@ -156,8 +221,9 @@ into four kinds of marker:
   believe");
 - *perlocutive*: the effect the arguer intends ("you should accept that").
 
-INCEpTION has no subject/predicate spans, so this is automated even in the
-lab. Rule baseline: dependency parse,#footnote[A parse that links each word to
+Gold has no subject/predicate spans: the labeller writes the canonical
+subjects and predicates, step 2's output, as text (@gold). So this is
+automated even in the lab, and scored through step 2's fields. Rule baseline: dependency parse,#footnote[A parse that links each word to
 the word it grammatically depends on and labels the link: `nsubj` is a nominal
 subject, `nsubj:pass` the subject of a passive verb.] subject = the
 `nsubj`/`nsubj:pass` subtree, predicate = the rest of the clause;
@@ -242,16 +308,20 @@ flowchart LR
 ```
 ]
 
-Flattening, with the transformations recorded as ATIP asks:
+Flattening writes the same fields gold has (@gold): the four canonical terms,
+and the transformations that changed a term's wording, each tagged with the
+statement it applied to. Each appears once, in any order. Transposition, the
+"because" substitution and omitted markers aren't listed: the conclusion and
+premise roles and the markers already record them. An $equiv$ judgement
+between two different wordings is tagged `same term`, so O2's decisions show
+next to the rewrites. The canonical sentence "conclusion because premise"
+and the lever written out are rendered from these fields, not stored.
 
 ```yaml
-canonical: >-
-  the minister did a great job
-  because the minister raised the university budget
-transformations:
-  - omission of illocutive marker "I'd say"
-  - substitution of "since" by "because"
-  - 'anaphora resolution: "she" → "the minister"'
+canonical:
+  conclusion: {subject: "the minister", predicate: "did a great job"}
+  premise:    {subject: "the minister", predicate: "raised the university budget"}
+transformations: ["anaphora (premise)"]
 ```
 
 *Delta reading.* Some arguments rest on who said something or what would
@@ -273,6 +343,109 @@ Passivization works on the parse. In "the budget was raised by the minister",
 the subject is `nsubj:pass` = "the budget"; when there is an agent
 (`obl:agent` = "the minister"), the rule baseline also tries the active
 reading (subject "the minister"), so a shared subject isn't missed.
+
+=== Rewriting: making shared terms visible <rewriting>
+
+$equiv$ can only judge terms that are already there. Some arguments share a
+term only after a rewording that creates new text. Kant writes "I need not
+think, if only I can pay: others will readily undertake the irksome work for
+me". As written the subjects differ ("I", "others"), which would make it γ.
+Reworded as "I will have others undertake the work for me", the premise shares
+the subject "I", and the argument is α. No judgement of sameness between the
+existing terms finds that: the shared term has to be produced.
+
+ATIP's transformations therefore come in two kinds:
+
+#table(
+  columns: (auto, 1fr, auto),
+  table.header([kind], [transformations], [handled by]),
+  [selective], [moving the conclusion first; replacing or dropping markers; resolving anaphora; recognising that two existing terms mean the same], [rules, O1, O2],
+  [generative], [making implicit content explicit; turning a rhetorical question into an assertion; switching voice beyond what the parse gives; nominalising ("being immature"); paraphrasing a term so it matches another], [*O9*, checked by *O10*],
+)
+
+Selective transformations only rearrange or compare what is in the text.
+Generative ones write new wording, so they need a proposer and a check.
+
+*O9: rewrite proposer.* Given the argument and its context, a generative model
+proposes up to $n$ candidate canonical pairs $(c', rho')$. Each candidate
+lists the transformations it used, from ATIP's list plus nominalisation, and
+the source span each new phrase rewrites. O9 is not an oracle in the sense of
+@oracles: its output is text, not a choice from a closed set. Its candidates
+_become_ the closed set the rest of the pipeline chooses from.
+
+*O10: rewrite check.* A candidate is valid if it says the same as the original
+in context. For a rewording, an NLI model#footnote[Natural language inference:
+given a text and a hypothesis, the model scores whether the text entails the
+hypothesis.] checks entailment both ways; for explication, which adds content,
+only that the original and the context entail the rewrite:
+
+$ P("valid"(c')) = min("entail"(c, c'), "entail"(c', c)) $
+
+*Preference.* ATIP switches voice "for highlighting a common subject or
+predicate", which implies preferring the reading that shares a term. So among
+valid candidates, γ is reported only when no candidate with
+$P("valid") >= theta$ shares a subject or predicate. Otherwise each candidate
+is one more branch of the composition (@composition), weighted by
+$P("valid")$.
+
+*Example.* The Kant sentence, with illustrative numbers:
+
+#table(
+  columns: (auto, 1fr, auto, auto, auto),
+  table.header([candidate], [premise as reworded], [transformation], [$P("valid")$], [form]),
+  [as written], [others will undertake the irksome work for me], [—], [1.00], [γ],
+  [$c'_1$], [I will have others undertake the irksome work for me], [activization], [0.83], [α],
+  [$c'_2$], [my thinking will be done by others], [passivization, nominalisation], [0.61], [γ],
+)
+
+$c'_1$ is valid and shares "I", so γ isn't reported; the code comes from the
+α branch (here α PF Pra). Compare "it is so easy to be immature … I need not
+exert myself", where the predicates "is easy" and "need not exert myself" may
+already be the same: that is an $equiv$ judgement (O2), not a rewrite.
+
+*Visibility.* Every candidate goes into the output record with its text,
+transformations, source spans and $P("valid")$, and the chosen one is marked:
+
+```yaml
+rewrites:
+  - premise: I will have others undertake the irksome work for me
+    transformations: ["activization (premise)"]
+    rewrites_span: "others will readily undertake the irksome work for me"
+    p_valid: 0.83
+    chosen: true
+```
+
+A reviewer can reject a rewrite and rerun from step 3. Gold records the
+labeller's own rewording in the same fields (@gold), so the lab can measure
+whether O9's candidates include it.
+
+*Limits.* A generated rewrite can tidy an argument into one the author didn't
+make. That is why O9 is restricted to ATIP's transformations, each tied to a
+source span, and why its candidates are kept and scored rather than taken as
+given. A generative model is also the most expensive part of the pipeline;
+in-game use may need a smaller model or no generative step.
+
+*Arms and cost.* Estimates for a laptop CPU, to be measured in the lab:
+
+#table(
+  columns: (auto, 1fr, auto),
+  table.header([arm], [what it is], [per candidate]),
+  [O9 rules], [voice switches from the parse, nominalisation from a morphology table], [~1 ms],
+  [O9 seq2seq], [Flan-T5-small or -base (80–250M parameters), fine-tuned to rewrite a premise to share a term with its conclusion; ONNX, quantised], [~50–150 ms],
+  [O9 LLM], [a 0.5–1.5B instruction-tuned model, 4-bit, via llama.cpp; the only arm that handles real paraphrase and explication], [~0.3–2 s],
+  [O10], [DeBERTa-v3 NLI, xsmall to base, both directions], [~10–120 ms],
+)
+
+O9 is the bottleneck, so it runs only when needed:
+
++ Run steps 1–3 with O2 alone. If a subject or predicate is already shared,
+  or the argument is δ, skip O9.
++ Otherwise propose candidates with the rule arm and check them with O10.
++ Only if none passes, call a generative arm.
+
+Cost then grows with the number of γ-leaning arguments, not with document
+length. Canonical forms are cached per statement, so a growing document or
+dialogue only pays for its new arguments.
 
 === Step 3: form <form>
 
@@ -669,6 +842,8 @@ maps passages of text to concepts.
   [O6], [whose perspective is $Z$?], [I/II/III], [grammatical person of the source], [rarely needed],
   [O7], [is $R_s = R_p$?], [i/d], [—], [NLI],
   [O8], [which lever?], [$K(F,t) union {"none"}$], [cue words], [NLI over filled-in levers],
+  [O9], [which rewordings could make a term shared?], [candidate pairs $(c', rho')$ (text)], [passive ↔ active from the parse], [generative model],
+  [O10], [does a rewording say the same as the original?], [probability], [—], [NLI, both directions],
 )
 
 Reuse: the reading-notes lab already runs embedding models (usable for O2) and
@@ -679,23 +854,49 @@ GLiNER2 (O1, O3, O5). Two things are new:
 - *A dependency parser* for the rule baselines (spaCy `en_core_web_sm` in the
   lab). Most of the deductive work runs on it.
 
-== Gold labels and evaluation
+== Gold labels and evaluation <gold>
 
-INCEpTION currently records no PTA labels. Proposal: three features on
-`Argument relation`, used only on `inference` edges.
+The gold labels are features on each `Connector` (@graph). The classifier's
+output record has the same fields, so every gold value can be compared with
+what the pipeline produced:
 
 #table(
   columns: (auto, auto),
   table.header([feature], [values]),
-  [`pta_form`], [`alpha` · `beta` · `gamma` · `delta`],
-  [`pta_substance`], [the substance codes for the form (`VF`, `su`, `i`, `III`, …)],
-  [`pta_lever`], [the lever keyword (`CAUSE`, `GENUS`, …) or `novel`, wording in `note`],
+  [`conclusion subject` · `conclusion predicate` · `premise subject` · `premise predicate`], [the canonical terms as text: $a$, $X$, $b$, $Y$ in the lever templates (the premise repeats $a$ for α and $X$ for β); for δ, $q$, `[is acceptable]` or `[is unacceptable]`, $q$, $Z$],
+  [`transformations`], [the wording changes, each `kind (statement)` from a closed tagset: anaphora, explication, illocution substitution, passivization, activization, nominalisation, same term; once each, unordered],
+  [`form`], [`alpha` · `beta` · `gamma` · `delta`],
+  [`substance`], [the substance codes, prefixed by their form (`α VF`, `β su`, `γ i`, `δ III`, …)],
+  [`lever`], [the lever keyword (`CAUSE`, `GENUS`, …), `none` for γ d, or `novel` with the wording in `note`],
+  [`concepts`], [what the argument is about: one or more tags, each a broad `concept` or a writer's own `concept/sense` (`being`, `being/scotus`, `being/heidegger-ontological`)],
 )
 
+Concept tags are references, not a theory of concepts: a tag names what an
+argument is about at the level of a glossary entry, and a sense records a
+writer's own version where the passage depends on it. Whether two writers share
+a concept stays a labelling decision, made per passage. Tags are lowercase,
+because INCEpTION may compare tag names case-insensitively. The tagset is
+open, so tags are added while labelling; together they become the concept list
+the models later choose from. Constraints can't relate a concept to its senses
+in a multi-valued feature, so the shared prefix does that job: typing `being`
+lists every `being/…` sense.
+
+Substance tags carry their form because INCEpTION may compare tag names
+case-insensitively, which would merge `pp` with `PP` and `i` with `I`.
+INCEpTION _constraints_ show the substances valid for the chosen form, and the
+levers valid for the chosen substance, first and in bold; they don't forbid
+the others, so the converter rejects invalid combinations. The layers and
+constraints are generated from the type table (@types) by
+`scripts/pta_schema.py` in the lab.
+
 The name is derived from the three, so it isn't stored. The features map
-one-to-one onto pipeline stages, which allows *stage-wise evaluation*: run the
-pipeline with gold values substituted for everything upstream of a stage, and
-that stage's errors are its own. End to end, measure code top-1/top-3#footnote[Whether the gold
+one-to-one onto pipeline stages (the canonical terms and transformations onto
+steps 1–2, the rest onto steps 3–5), which allows *stage-wise evaluation*: run
+the pipeline with gold values substituted for everything upstream of a stage,
+and that stage's errors are its own. Canonical terms are compared by meaning,
+not string: span overlap for terms taken from the text, entailment both ways
+(as O10 checks rewrites) for reworded ones. Transformations are compared as
+sets. End to end, measure code top-1/top-3#footnote[Whether the gold
 code is the most likely code / among the three most likely.] and calibration.
 Statistics: each arm is compared pairwise against one baseline, with
 confidence intervals from resampling by passage.
@@ -703,13 +904,33 @@ confidence intervals from resampling by passage.
 A second human pass on a sample gives the ceiling: ATIP is hard for people
 too, and no arm should be expected to beat human agreement.
 
+*Pilot corpus.* The first corpus is one short argumentative excerpt from
+each of about 30 writers across traditions (ancient, Buddhist, patristic and scholastic, early modern,
+German idealist, phenomenological, analytic, critical, psychoanalytic, Kyoto
+School, and speeches), plus the ten single-argument examples from the PTA
+website, which test typing on their own. One writer's style shouldn't shape
+the whole corpus. The pilot finds where the pipeline breaks; it is too small
+to rank arms.
+
+- *Split by writer.* Each writer in turn is the test set and the rest form
+  the dev set, so every annotation is tested once and no example helps to
+  classify its own writer.
+- *What the dev set is for.* O9's generative arm takes 3–8 dev cases as
+  in-context examples (original pair, the labeller's rewording, its
+  transformations), chosen by similarity to the current argument. The other
+  oracles are used zero-shot; the dev set sets their thresholds (O2, O10) and
+  calibrates their confidences (O7, O8, GLiNER2). Rule baselines may be fixed
+  against the dev set only.
+- *Rewordings as gold.* The canonical terms and transformations hold the
+  labeller's rewording; `note` holds only remarks. O9's examples and its
+  evaluation read the rewording; the subject/predicate splits are gold for O1
+  and O2.
+- *First run.* The classifier runs on the gold connectors, stage-wise and end
+  to end. Finding the connectors automatically (the document-analysis
+  procedure) has no oracles yet and comes later.
+
 Records quote the lab's source texts, which are excerpts of published books, so
 they are never committed.
-
-#decide[Is three extra features on `inference` edges acceptable labelling
-load? The alternative is a separate PTA pass over already-labelled edges,
-recorded under its own `Pass` (the schema's document-level record of a
-labelling pass).]
 
 == In-game use (sketch) <in-game>
 
@@ -726,6 +947,12 @@ What changes from the lab:
 - *Runtime.* Rust with `ort`, on a throttled CPU. Every model arm must export
   to ONNX, and the rule baselines must be small enough to port. The tables are
   already shared data (@composition).
+- *Rewriting in-game.* O9's LLM arm is too slow and too large (~400 MB at
+  0.5B, 4-bit) for a reply that should feel immediate. In-game O9 uses the
+  rule and seq2seq arms, gated as in @rewriting, and may run after the
+  player's line rather than before the reply. NPC arguments are analysed
+  offline. The LLM arm stays in the lab, where its reviewed outputs can train
+  the seq2seq arm.
 
 What key extraction gets, per argument:
 - the code distribution;
@@ -747,6 +974,11 @@ it reads the same record and can veto. How keys combine these is left open.
 - *Sameness is the pivot.* O2 decides form, and form decides every later
   candidate set. Errors there cascade; stage-wise evaluation will show how
   much.
+- *Rewriting decides form.* Allowed rewordings are loose enough that one
+  argument can come out α, β or γ (@rewriting). O9 and O10 make the choice
+  explicit and reviewable, but their errors move arguments between forms; the
+  lab should measure how often O9's candidates include the labeller's
+  rewording.
 - *Condensed gamma.* No good scorer for "the insertion makes the premise
   relevant" yet. First version: try it, report both readings, lower the
   confidence.
@@ -776,8 +1008,18 @@ it reads the same record and can veto. How keys combine these is left open.
   Version 6._ #link("https://www.periodic-table-of-arguments.org/argument-type-identification-procedure")
 - Wagemans, J.H.M. _Periodic Table of Arguments, version 3.1_, with worked
   examples of every type. #link("https://www.periodic-table-of-arguments.org/pta-3-1-clickable")
+- Hinton, M., Wagemans, J.H.M. (2023). "How persuasive is AI-generated
+  argumentation? An analysis of the quality of an argumentative text produced
+  by the GPT-3 AI text generator." _Argument & Computation_ 14(1), 59–74.
+  #link("https://doi.org/10.3233/AAC-210026") Local copy in `.docs/reference/`.
+- Hinton, M., Wagemans, J.H.M. (2022). "Evaluating reasoning in natural
+  arguments: A procedural approach." _Argumentation_ 36, 61–84. The
+  type-specific lever questions.
 - Visser, J., Lawrence, J., Reed, C., Wagemans, J., Walton, D. (2021).
   "Annotating Argument Schemes." _Argumentation_ 35, 101–139.
+- Chesñevar, C., McGinnis, J., Modgil, S., Rahwan, I., Reed, C., Simari, G.,
+  South, M., Vreeswijk, G., Willmott, S. (2006). "Towards an Argument
+  Interchange Format." _Knowledge Engineering Review_ 21(4), 293–316.
 
 == Appendix: the 50 PTA 3.1 types <types>
 

@@ -1,6 +1,6 @@
 # PTA 3.1 argument types
 
-All 50 types, from ATIP v6 Table 7. `code` is note-lab's compact label (form
+All 50 types, from ATIP v6 Table 7. `code` is the lab's compact label (form
 letter, substance, symbol). For beta types the substance in the code is the
 actual one found (any of the listed values).
 
