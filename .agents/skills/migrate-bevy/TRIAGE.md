@@ -1,6 +1,6 @@
 # Bevy 0.19 → 0.20 migration skill: triage
 
-**Status:** discovery and scope proposal  
+**Status:** historical. Discovery notes from the rc snapshot; references were reconciled against final `v0.20.0` on 2026-10-31 (see `references/INDEX.md`). Kept for provenance; do not treat open items here as current.  
 **Snapshot:** `v0.19.0` (`c6f634ca9f`) → `f3b5346451`, eight commits after `v0.20.0-rc.1` (`1b1f3ec1be`)  
 **Goal:** build a Pi skill that can diagnose a Bevy 0.19 project, explain each relevant 0.20 break, apply mechanical migrations where safe, and verify the result.
 

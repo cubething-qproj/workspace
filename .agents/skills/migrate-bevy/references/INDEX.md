@@ -1,10 +1,25 @@
 # Bevy 0.19 → 0.20 migration reference index
 
-These are snapshots of Bevy's draft 0.20 migration guides at source commit
-`f3b53464513111374089cfcc724ab448e8479dd1`, eight commits after
-`v0.20.0-rc.1`. Search this directory by compiler symbol or concept, then read
-only the matching guide files. Treat the material as provisional until the
-final `v0.20.0` guide is reconciled.
+These are the official Bevy 0.20 migration guides from
+`_release-content/migration-guides/` at tag `v0.20.0` (74 files; the rendered
+copy is <https://bevy.org/learn/migration-guides/0-19-to-0-20/>). They were
+reconciled on 2026-10-31 against the earlier rc snapshot (`f3b5346`): only
+typo-level wording changed, no guides were added or removed. `v0.20.1` (10
+commits) adds no migration guides; it is bug fixes only. Search this directory
+by compiler symbol or concept, then read only the matching guide files.
+
+Not every breaking change has a guide. Also read `removed-deprecations.md`
+(fully reconciled against `v0.20.0`), which covers 0.19 deprecations that were
+deleted, and the post-rc notes below.
+
+Post-rc.1 changes without a guide (`v0.20.0-rc.1..v0.20.0`):
+
+- #25805: `#[states(scoped_entities)]` is now a compile error.
+- #26033: `DeprecatedInteraction` is public, easing staged migration off
+  `Interaction` (see `deprecate_button_and_interaction.md`).
+- #25878: `QueryBuilder::{or, and, optional}` take `FnOnce`.
+- #25864: exclusive-system change detection fixed; ticks observed by
+  exclusive systems may differ from rc builds.
 
 Known source-metadata anomalies:
 

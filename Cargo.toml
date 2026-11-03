@@ -1,8 +1,8 @@
 [workspace]
 resolver="3"
 members=["bin/*", "lib/*"]
-# Local checkouts with workspaces of their own (e.g. misc/jackdaw, patched in
-# below). Without this, their crates inherit `workspace = true` keys from this
+# Local checkouts with workspaces of their own (e.g. misc/forks/jackdaw).
+# Without this, their crates inherit `workspace = true` keys from this
 # root instead of their own.
 exclude=["misc"]
 
@@ -62,5 +62,3 @@ q_cam = {path = "lib/q_cam"}
 [patch."https://github.com/cubething-qproj/q_query_lang"]
 q_query_lang = {path = "lib/q_query_lang"}
 
-[patch."https://github.com/ada-x64/jackdaw"]
-jackdaw_runtime = { path = "misc/jackdaw/crates/jackdaw_runtime" }

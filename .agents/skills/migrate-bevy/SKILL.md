@@ -12,9 +12,9 @@ Resolve every relative path in this file against this skill's directory.
 
 ## References and helper
 
-- `references/INDEX.md` indexes 74 bundled draft migration guides and known metadata anomalies.
+- `references/INDEX.md` indexes the 74 official `v0.20.0` migration guides, post-rc changes without a guide, and known metadata anomalies. The latest release is `0.20.1` (bug fixes only; target `"0.20"`).
 - `references/migration-guides/` contains the full guide snapshots. Search this directory for the exact symbol or diagnostic, then read only relevant files.
-- `references/removed-deprecations.md` covers APIs that compiled in 0.19 but were removed in 0.20.
+- `references/removed-deprecations.md` covers every API deprecated in 0.19 and removed in 0.20 (reconciled against the final tag). Clearing 0.19 deprecation warnings *before* the bump resolves most of these with better diagnostics.
 - `scripts/scan.py` conservatively reports likely old APIs and behavioral review sites. It never edits files and its findings are candidates, not proof.
 - `TRIAGE.md` records catalogue scope, risks, and follow-up work. Read it only when maintaining or extending this skill.
 
@@ -183,7 +183,7 @@ When no bundled guide matches:
 5. Classify the result as public migration, removed deprecation, upstream regression, ecosystem incompatibility, or project-local issue.
 6. Explain the evidence and source before implementing an inferred migration.
 
-If the final 0.20 tag is unavailable, say which RC/commit was used and mark inferred mappings provisional.
+The references are pinned to the final `v0.20.0` tag. If you are targeting a later patch or a git revision, check `v0.20.0..<target>` for new breaking changes.
 
 ## 6. Verify comprehensively
 
@@ -223,12 +223,11 @@ If asked only for diagnosis, do not edit. Return an ordered migration plan with 
 
 ## Maintaining this skill
 
-When `v0.20.0` is tagged:
+Reconciled against final `v0.20.0` on 2026-10-31 (guides, removed deprecations, post-rc commit log). For a new patch release:
 
-1. compare `v0.20.0-rc.1..v0.20.0`;
-2. reconcile every bundled draft against the published final guide;
-3. enumerate all public items deprecated at `v0.19.0` and absent at `v0.20.0`;
-4. update scanner rules only for patterns precise enough to be useful;
-5. pin the reference snapshot and compatibility note to final `v0.20.0`;
-6. test fixtures for umbrella and split-crate projects, minimal/default/all feature sets, shaders, UI, sprites, reflection, and custom ECS traits;
-7. verify idempotency: a second migration run must produce no edits.
+1. `gh api repos/bevyengine/bevy/compare/v0.20.0...v0.20.N` and scan commit titles for API changes;
+2. diff `_release-content/migration-guides/` at the new tag against `references/migration-guides/`;
+3. update scanner rules only for patterns precise enough to be useful;
+4. verify idempotency: a second migration run must produce no edits.
+
+For the next major (0.21), fork this skill rather than editing it; the deprecation-enumeration method is recorded at the bottom of `references/removed-deprecations.md`.

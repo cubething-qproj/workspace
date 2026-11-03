@@ -5,3 +5,6 @@ repos.yml
 .claude
 tmp/
 .agents/sessions
+bin
+misc
+lib
