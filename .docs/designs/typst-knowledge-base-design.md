@@ -1,8 +1,8 @@
 # A Typst knowledge base, with documents as sources
 
-**Status:** initial PCG pilot approved and committed as wiki `7d02c7a`.
-Design discussion began 2026-11-03. Source-layout cleanup and visual presentation
-are the next review step.
+**Status:** initial PCG pilot committed as wiki `7d02c7a`; source-layout cleanup,
+blog-style visual presentation, galleries and per-page counter resets approved
+and committed as wiki `25bddf0`. Design discussion began 2026-11-03.
 
 **Confirmed direction:** Quell-focused articles; external references rather than
 an encyclopaedia; simple emoji callouts; relevant documents listed newest-edited
@@ -276,6 +276,20 @@ Proposed next step, subject to agreement:
 
 The pilot is successful if the site becomes useful to consult, not if another
 six documents have changed format.
+
+## Current source layout
+
+The approved cleanup is wiki commit `25bddf0`. `src/wiki/<area>/` holds articles,
+with `index.typ` as the area's portal; `src/documents/` and `src/reference/` hold
+supporting records. Shared Typst code is `src/template.typ`; frontend code is in
+`web/`, assets in `static/`, and build tooling in `scripts/`. Consult the nested
+wiki's `README.md` for current authoring examples rather than the earlier paths
+in the historical checkpoint below.
+
+The last build succeeded with 43 catalogue entries. Terrain generation's notes
+are 1–3 and Trail layout's notes are 1–4; page counters no longer leak across the
+bundle. Eight Python checks passed during cleanup. The optional Chromium smoke
+check remains unfinished, with further test work explicitly deferred by Ada.
 
 ## Initial implementation checkpoint
 
