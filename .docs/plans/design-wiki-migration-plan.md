@@ -1,7 +1,10 @@
 # Plan: move all design docs into the wiki
 
-**Date:** 2026-11-03. **Status:** approved; steps 1–3 committed; step 4 NLP migration
-approved, PCG next. Draft 3 moves the server to Vite and the wiki into its own repo.
+**Date:** 2026-11-03. **Status:** bulk migration paused. The knowledge-base pilot
+and retained PCG document conversions are committed as wiki `7d02c7a`; original
+PCG Markdown files and images have not been removed. The topic-first knowledge-base pilot supersedes the bulk
+migration direction; see `../designs/typst-knowledge-base-design.md`. The original
+plan below is retained as a record, not an instruction to resume migration.
 
 ## Goal
 
@@ -218,8 +221,28 @@ The explainers stay one shared pool, not tied to an area.
    the unchanged `_template.typ` (`html` unavailable to its configuration) and
    `vite.config.mts`; no new page diagnostics were reported.
 
-   Next: migrate PCG, then stop for area review. External path updates remain
-   grouped in step 5.
+   NLP commits: wiki `3f85991`, org cleanup `e75bd00` (both SSH-signed).
+
+   **PCG review checkpoint (2026-11-03):** six pages converted in `wiki/pcg/`:
+   `quell-world-generation-design` (draft), `quell-hex-terrain-r11-design`
+   (current), `hex-paths-overview` (done, explicitly an October 13 snapshot),
+   and the three superseded designs `quell-hex-layout-design`,
+   `quell-hex-paths-prototype-design`, `quell-hex-terrain-design`.
+   All 110 images are copied under `wiki/pcg/quell-hex-terrain/`; hashes match
+   the originals. The 13 displayed figures are embedded by Typst in the HTML.
+   One shared CSS rule keeps images within the reading column. Original files
+   and assets remain untouched pending manual approval; PCG is not committed.
+
+   Verified: full wiki build and Pagefind (40 authored pages), standalone HTML
+   compilation of all six pages, local links and anchors, code-block fidelity
+   (apart from the intentional image-output path update), and embedded image
+   bytes. Chromium checked all six pages, metadata, applicable backlinks and
+   search inclusion; all 13 figures load and fit at desktop and narrow widths.
+   LSP has no new page diagnostics; existing template/Vite errors remain.
+
+   Next: review PCG, then pair its wiki commit with removal of the six Markdown
+   originals and the old `designs/quell-hex-terrain/` image tree. Continue with
+   engine after approval. External path updates remain grouped in step 5.
 
 5. **Fix paths outside the wiki** (org repo, plus the skills). About 20
    references point at `.docs/designs` or `.docs/reference`:
