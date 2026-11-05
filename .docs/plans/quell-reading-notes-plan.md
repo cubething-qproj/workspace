@@ -1,7 +1,8 @@
 # Quell reading notes: plan
 
-Implements `.docs/designs/quell-reading-notes-design.md` in `misc/note-lab`.
-One step per commit; each goes through manual review, then a staged Sonnet
+Implements `.docs/designs/quell-reading-notes-design.md` in note-lab.
+note-lab's code is archived at the tag `note-lab-final` in `misc/labs/nlp`,
+which is now the debate model lab (2026-11-05). One step per commit; each goes through manual review, then a staged Sonnet
 review whose fixes stay unstaged until approved.
 
 ## Done
