@@ -18,6 +18,10 @@
 
 #align(center, text(20pt, weight: "bold")[Quell debate: roadmap])
 
+#block(
+  fill: rgb("#f3f4f6"), stroke: (left: 3pt + rgb("#6b7280")), inset: 10pt, radius: 2pt, width: 100%,
+)[*Outdated (2026-11-06).* NLP was dropped from Quell: free-text player input, runtime parsing, the NLP pipeline (Part 2, "The NLP pipeline"), the Track A NLP phases, and INCEpTION. NPC dialogue and arguments are authored by hand, and players argue in the thinking editor only. Kept: the PTA/ATIP theory, the thinking editor and the debate game design. Whether notes are interpreted into concepts (the "interpreting notes" model) and whether xAIF is still needed are undecided. Already superseded earlier by the draft-2 plan map in the wiki.]
+
 Status: *first draft, 2026-11-03, for discussion.* This document pulls the
 designs, plans and lab work so far into one plan, from labelled texts to a
 debate you can play in Quell. Where it makes a choice the existing docs

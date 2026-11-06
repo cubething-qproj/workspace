@@ -1,5 +1,7 @@
 # PTA lab: plan
 
+> **Outdated (2026-11-06).** The NLP lab, its INCEpTION labelling and automated classification were dropped; NPC dialogue and arguments are authored by hand. The PTA/ATIP theory is kept. Steps that share work with the reading-notes plan (embeddings, GLiNER2) depend on that plan's still-undecided fate.
+
 Gets the PTA classifier lab running in `misc/labs/nlp`, following
 `.docs/designs/pta-atip-algorithm.typ` (the classifier) and
 `.docs/designs/pta-document-analysis.typ` (finding arguments). One step per
